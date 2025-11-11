@@ -1,0 +1,661 @@
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import api from '@/utils/api'
+import type { Grade, Mark, Student, Subject, Quarter, StudyYear } from '@/utils/types'
+
+const marks = ref<Mark[]>([])
+const students = ref<Student[]>([])
+const subjects = ref<Subject[]>([])
+const years = ref<StudyYear[]>([])
+const grades = ref<Grade[]>([])
+const quarters = ref<Array<Quarter & { studyYear?: StudyYear }>>([])
+
+const loading = ref(false)
+const optionsLoading = ref(false)
+const errorMessage = ref('')
+
+const editDialog = ref(false)
+const saving = ref(false)
+const selectedMark = ref<Mark | null>(null)
+const editForm = reactive({
+  score: 0,
+})
+
+const createDialog = ref(false)
+const createLoading = ref(false)
+const createForm = reactive({
+  studentId: '',
+  subjectId: null as number | null,
+  quarterId: null as number | null,
+  score: 0,
+})
+
+const bulkSelections = reactive({
+  studyYearId: null as number | null,
+  gradeId: null as number | null,
+  subjectId: null as number | null,
+  quarterId: null as number | null,
+})
+
+const bulkScores = reactive<Record<string, number | null>>({})
+const bulkSubmitting = ref(false)
+
+const filteredStudents = computed(() => students.value)
+
+const quarterOptions = computed(() => {
+  if (!bulkSelections.studyYearId) return quarters.value
+  return quarters.value.filter(q => q.studyYearId === bulkSelections.studyYearId)
+})
+
+const markKey = (studentId: string, subjectId: number, quarterId: number) =>
+  `${studentId}-${subjectId}-${quarterId}`
+
+const existingMarksMap = computed(() => {
+  const map = new Map<string, Mark>()
+  marks.value.forEach(mark => {
+    map.set(markKey(mark.student.id, mark.subject.id, mark.quarter.id), mark)
+  })
+  return map
+})
+
+const bulkReady = computed(
+  () => Boolean(bulkSelections.subjectId && bulkSelections.quarterId && filteredStudents.value.length),
+)
+
+const headers = [
+  { title: 'Student', key: 'student' },
+  { title: 'Grade', key: 'grade' },
+  { title: 'Subject', key: 'subject' },
+  { title: 'Quarter', key: 'quarter' },
+  { title: 'Score', key: 'score' },
+  { title: 'Actions', key: 'actions', sortable: false },
+]
+
+const marksFilters = reactive({
+  search: '',
+  gradeId: null as number | null,
+  studyYearId: null as number | null,
+  subjectId: null as number | null,
+})
+
+const fetchMarks = async () => {
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    const { data } = await api.get<Mark[]>('/api/marks', {
+      params: {
+        search: marksFilters.search || undefined,
+        gradeId: marksFilters.gradeId || undefined,
+        studyYearId: marksFilters.studyYearId || undefined,
+        subjectId: marksFilters.subjectId || undefined,
+      },
+    })
+    marks.value = data
+  } catch (err: any) {
+    errorMessage.value = err?.response?.data?.message || 'Failed to load marks.'
+  } finally {
+    loading.value = false
+  }
+}
+
+const fetchOptions = async () => {
+  optionsLoading.value = true
+  if (!loading.value) errorMessage.value = ''
+  const errors: string[] = []
+
+  try {
+    const [subjectsRes, yearsRes, gradesRes] = await Promise.allSettled([
+      api.get<Subject[]>('/api/subjects'),
+      api.get<StudyYear[]>('/api/years'),
+      api.get<Grade[]>('/api/grades'),
+    ])
+
+    if (subjectsRes.status === 'fulfilled') {
+      subjects.value = subjectsRes.value.data
+    } else {
+      console.error('Failed to load subjects', subjectsRes.reason)
+      errors.push('subjects')
+    }
+
+    if (yearsRes.status === 'fulfilled') {
+      years.value = yearsRes.value.data
+      quarters.value = years.value.flatMap(year =>
+        (year.quarters ?? []).map(q => ({ ...q, studyYear: year })),
+      )
+    } else {
+      console.error('Failed to load quarters', yearsRes.reason)
+      errors.push('quarters')
+    }
+
+    if (gradesRes.status === 'fulfilled') {
+      grades.value = gradesRes.value.data
+    } else {
+      console.error('Failed to load grades', gradesRes.reason)
+      errors.push('grades')
+    }
+  } finally {
+    optionsLoading.value = false
+  }
+
+  if (errors.length) {
+    errorMessage.value = `Failed to load ${errors.join(', ')}.`
+  }
+}
+
+const fetchBulkStudents = async () => {
+  if (!bulkSelections.studyYearId) {
+    students.value = []
+    resetBulkScores()
+    return
+  }
+
+  try {
+    const { data } = await api.get<Student[]>('/api/students', {
+      params: {
+        studyYearId: bulkSelections.studyYearId,
+        gradeId: bulkSelections.gradeId || undefined,
+      },
+    })
+    students.value = data
+    prefillBulkScores()
+  } catch (err: any) {
+    console.error('Failed to load students for bulk entry', err)
+    errorMessage.value = err?.response?.data?.message || 'Failed to load students.'
+    students.value = []
+  }
+}
+
+const openEditDialog = (mark: Mark) => {
+  selectedMark.value = mark
+  editForm.score = mark.score
+  editDialog.value = true
+}
+
+const updateMark = async () => {
+  if (!selectedMark.value) return
+  saving.value = true
+  try {
+    await api.put(`/api/marks/${selectedMark.value.id}`, { score: editForm.score })
+    editDialog.value = false
+    await fetchMarks()
+  } catch (err: any) {
+    errorMessage.value = err?.response?.data?.message || 'Failed to update mark.'
+  } finally {
+    saving.value = false
+  }
+}
+
+const resetCreateForm = () => {
+  createForm.studentId = ''
+  createForm.subjectId = null
+  createForm.quarterId = null
+  createForm.score = 0
+}
+
+const resetBulkScores = () => {
+  Object.keys(bulkScores).forEach(key => delete bulkScores[key])
+}
+
+const prefillBulkScores = () => {
+  resetBulkScores()
+  if (!bulkReady.value || !bulkSelections.subjectId || !bulkSelections.quarterId) return
+
+  filteredStudents.value.forEach(student => {
+    const key = markKey(student.id, bulkSelections.subjectId!, bulkSelections.quarterId!)
+    const existing = existingMarksMap.value.get(key)
+    bulkScores[student.id] = existing?.score ?? null
+  })
+}
+
+const getExistingScore = (studentId: string) => {
+  if (!bulkSelections.subjectId || !bulkSelections.quarterId) return null
+  const existing = existingMarksMap.value.get(
+    markKey(studentId, bulkSelections.subjectId, bulkSelections.quarterId),
+  )
+  return existing?.score ?? null
+}
+
+const createMark = async () => {
+  if (!createForm.studentId || !createForm.subjectId || !createForm.quarterId) return
+  createLoading.value = true
+  try {
+    await api.post('/api/marks', {
+      studentId: createForm.studentId,
+      subjectId: createForm.subjectId,
+      quarterId: createForm.quarterId,
+      score: createForm.score,
+    })
+    createDialog.value = false
+    resetCreateForm()
+    await fetchMarks()
+  } catch (err: any) {
+    errorMessage.value = err?.response?.data?.message || 'Failed to create mark.'
+  } finally {
+    createLoading.value = false
+  }
+}
+
+const saveBulkMarks = async () => {
+  if (!bulkReady.value || !bulkSelections.subjectId || !bulkSelections.quarterId) return
+
+  const entries = filteredStudents.value
+    .map(student => {
+      const value = bulkScores[student.id]
+      if (value === null || value === undefined || value === '') return null
+      return {
+        studentId: student.id,
+        subjectId: bulkSelections.subjectId!,
+        quarterId: bulkSelections.quarterId!,
+        score: Number(value),
+      }
+    })
+    .filter(Boolean) as Array<{
+      studentId: string
+      subjectId: number
+      quarterId: number
+      score: number
+    }>
+
+  if (!entries.length) return
+
+  bulkSubmitting.value = true
+  try {
+    await api.post('/api/marks/bulk', { entries })
+    await fetchMarks()
+    prefillBulkScores()
+  } catch (err: any) {
+    errorMessage.value = err?.response?.data?.message || 'Failed to save marks.'
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+
+onMounted(async () => {
+  await Promise.all([fetchMarks(), fetchOptions()])
+})
+
+watch(
+  () => [bulkSelections.studyYearId, bulkSelections.gradeId],
+  () => {
+    fetchBulkStudents()
+    if (bulkSelections.quarterId && !quarterOptions.value.some(q => q.id === bulkSelections.quarterId)) {
+      bulkSelections.quarterId = null
+    }
+  },
+)
+
+watch(
+  () => [bulkSelections.subjectId, bulkSelections.quarterId],
+  () => {
+    prefillBulkScores()
+  },
+)
+
+watch(marks, () => {
+  prefillBulkScores()
+})
+</script>
+
+<template>
+  <div>
+    <div class="d-flex align-center justify-space-between flex-wrap gap-4 mb-6">
+      <div>
+        <h2 class="text-h5 mb-1">
+          Marks
+        </h2>
+        <p class="text-medium-emphasis">
+          Create and review scores recorded across subjects and quarters.
+        </p>
+      </div>
+      <div class="d-flex gap-3">
+        <VBtn
+          variant="outlined"
+          color="primary"
+          :loading="loading"
+          @click="fetchMarks"
+        >
+          Refresh
+        </VBtn>
+        <VBtn
+          color="primary"
+          :loading="optionsLoading"
+          @click="createDialog = true"
+        >
+          Add mark
+        </VBtn>
+      </div>
+    </div>
+
+    <VAlert
+      v-if="errorMessage"
+      type="error"
+      variant="tonal"
+      class="mb-4"
+    >
+      {{ errorMessage }}
+    </VAlert>
+
+    <VCard class="mb-6">
+      <VCardTitle>Quick entry</VCardTitle>
+      <VCardSubtitle>
+        Select a study year, subject, and quarter to update scores for every student in one place.
+      </VCardSubtitle>
+      <VCardText>
+        <VRow class="mb-4">
+          <VCol
+            cols="12"
+            md="3"
+          >
+            <VSelect
+              v-model="bulkSelections.studyYearId"
+              :items="years"
+              item-title="name"
+              item-value="id"
+              label="Study year"
+              :loading="optionsLoading"
+            />
+          </VCol>
+          <VCol
+            cols="12"
+            md="3"
+          >
+            <VSelect
+              v-model="bulkSelections.gradeId"
+              :items="grades"
+              item-title="name"
+              item-value="id"
+              label="Grade"
+              clearable
+            />
+          </VCol>
+          <VCol
+            cols="12"
+            md="3"
+          >
+            <VSelect
+              v-model="bulkSelections.subjectId"
+              :items="subjects"
+              item-title="name"
+              item-value="id"
+              label="Subject"
+              :loading="optionsLoading"
+            />
+          </VCol>
+          <VCol
+            cols="12"
+            md="3"
+          >
+            <VSelect
+              v-model="bulkSelections.quarterId"
+              :items="quarterOptions"
+              item-title="name"
+              item-value="id"
+              label="Quarter"
+              :loading="optionsLoading"
+              :disabled="!bulkSelections.studyYearId"
+            >
+              <template #item="{ props, item }">
+                <VListItem
+                  v-bind="props"
+                  :subtitle="item?.raw?.studyYear?.name"
+                />
+              </template>
+              <template #selection="{ item }">
+                <span>{{ item?.title }}</span>
+              </template>
+            </VSelect>
+          </VCol>
+        </VRow>
+
+        <div v-if="bulkSelections.subjectId && bulkSelections.quarterId">
+          <VTable
+            v-if="filteredStudents.length"
+            class="bulk-table"
+          >
+            <thead>
+              <tr>
+                <th>Student</th>
+                <th>Grade</th>
+                <th style="width: 160px;">
+                  Score
+                </th>
+                <th style="width: 120px;">
+                  Existing
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="student in filteredStudents"
+                :key="student.id"
+              >
+                <td>{{ student.fullName }}</td>
+                <td>{{ student.grade?.name || '—' }}</td>
+                <td>
+                  <VTextField
+                    v-model.number="bulkScores[student.id]"
+                    type="number"
+                    density="compact"
+                    hide-details
+                    min="0"
+                    max="100"
+                  />
+                </td>
+                <td>
+                  {{ getExistingScore(student.id) ?? '—' }}
+                </td>
+              </tr>
+            </tbody>
+          </VTable>
+          <p
+            v-else
+            class="text-medium-emphasis mb-0"
+          >
+            No students found for this study year.
+          </p>
+        </div>
+        <div v-else class="text-medium-emphasis">
+          Select a subject and quarter to begin entering scores.
+        </div>
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn
+          color="primary"
+          :disabled="!bulkReady"
+          :loading="bulkSubmitting"
+          @click="saveBulkMarks"
+        >
+          Save scores
+        </VBtn>
+      </VCardActions>
+    </VCard>
+
+    <VCard class="mb-4">
+      <VCardText>
+        <VRow>
+          <VCol cols="12" md="3">
+            <VTextField
+              v-model="marksFilters.search"
+              label="Search"
+              placeholder="Name or ID"
+              prepend-inner-icon="ri-search-line"
+              @input="fetchMarks"
+            />
+          </VCol>
+          <VCol cols="12" md="3">
+            <VSelect
+              v-model="marksFilters.gradeId"
+              :items="grades"
+              item-title="name"
+              item-value="id"
+              label="Grade"
+              clearable
+              @update:model-value="fetchMarks"
+            />
+          </VCol>
+          <VCol cols="12" md="3">
+            <VSelect
+              v-model="marksFilters.studyYearId"
+              :items="years"
+              item-title="name"
+              item-value="id"
+              label="Study year"
+              clearable
+              @update:model-value="fetchMarks"
+            />
+          </VCol>
+          <VCol cols="12" md="3">
+            <VSelect
+              v-model="marksFilters.subjectId"
+              :items="subjects"
+              item-title="name"
+              item-value="id"
+              label="Subject"
+              clearable
+              @update:model-value="fetchMarks"
+            />
+          </VCol>
+        </VRow>
+      </VCardText>
+    </VCard>
+
+    <VDataTable
+      :items="marks"
+      :headers="headers"
+      :loading="loading"
+      class="elevation-1"
+    >
+      <template #item.student="{ item }">
+        {{ item.student.fullName }}
+      </template>
+      <template #item.grade="{ item }">
+        {{ item.student.grade?.name || '—' }}
+      </template>
+      <template #item.subject="{ item }">
+        {{ item.subject.name }}
+      </template>
+      <template #item.quarter="{ item }">
+        {{ item.quarter.name }}
+      </template>
+      <template #item.actions="{ item }">
+        <VBtn
+          variant="text"
+          icon="ri-pencil-line"
+          @click="openEditDialog(item)"
+        />
+      </template>
+    </VDataTable>
+
+    <VDialog
+      v-model="createDialog"
+      max-width="520"
+    >
+      <VCard>
+        <VCardTitle>New mark</VCardTitle>
+        <VCardText>
+          <VForm @submit.prevent="createMark">
+            <VSelect
+              v-model="createForm.studentId"
+              :items="students"
+              item-title="fullName"
+              item-value="id"
+              label="Student"
+              required
+            />
+            <VSelect
+              v-model="createForm.subjectId"
+              :items="subjects"
+              item-title="name"
+              item-value="id"
+              label="Subject"
+              class="mt-4"
+              required
+            />
+            <VSelect
+              v-model="createForm.quarterId"
+              :items="quarters"
+              item-title="name"
+              item-value="id"
+              label="Quarter"
+              class="mt-4"
+              required
+            >
+              <template #item="{ props, item }">
+                <VListItem
+                  v-bind="props"
+                  :subtitle="item?.raw?.studyYear?.name"
+                />
+              </template>
+              <template #selection="{ item }">
+                <span>{{ item?.title }}</span>
+              </template>
+            </VSelect>
+            <VTextField
+              v-model.number="createForm.score"
+              type="number"
+              label="Score"
+              class="mt-4"
+              min="0"
+              max="100"
+              required
+            />
+          </VForm>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn
+            variant="text"
+            @click="createDialog = false"
+          >
+            Cancel
+          </VBtn>
+          <VBtn
+            color="primary"
+            :loading="createLoading"
+            @click="createMark"
+          >
+            Save
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <VDialog
+      v-model="editDialog"
+      max-width="420"
+    >
+      <VCard>
+        <VCardTitle>Edit mark</VCardTitle>
+        <VCardText>
+          <p class="text-medium-emphasis">
+            {{ selectedMark?.student.fullName }} • {{ selectedMark?.subject.name }} • {{ selectedMark?.quarter.name }}
+          </p>
+          <VTextField
+            v-model.number="editForm.score"
+            type="number"
+            label="Score"
+            min="0"
+            max="100"
+          />
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn
+            variant="text"
+            @click="editDialog = false"
+          >
+            Cancel
+          </VBtn>
+          <VBtn
+            color="primary"
+            :loading="saving"
+            @click="updateMark"
+          >
+            Save
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+  </div>
+</template>

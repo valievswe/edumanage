@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  tgId      String   @unique
+  username  String?
+  fname     String?
+  lname     String?
+  createdAt DateTime @default(now())
+}
+
+model Admin {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+}
+
+model StudyYear {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique // "2025/2026"
+  startDate DateTime
+  endDate   DateTime
+  createdAt DateTime @default(now())
+
+  quarters    Quarter[]
+  students    Student[]
+  monitorings Monitoring[]
+}
+
+model Quarter {
+  id          Int       @id @default(autoincrement())
+  name        String
+  studyYear   StudyYear @relation(fields: [studyYearId], references: [id], onDelete: Cascade)
+  studyYearId Int
+  startDate   DateTime?
+  endDate     DateTime?
+  marks       Mark[]
+}
+
+model Student {
+  id          String    @id
+  fullName    String
+  grade       Grade?    @relation(fields: [gradeId], references: [id])
+  gradeId     Int?
+  studyYear   StudyYear @relation(fields: [studyYearId], references: [id], onDelete: Cascade)
+  studyYearId Int
+  createdAt   DateTime  @default(now())
+
+  marks       Mark[]
+  monitorings Monitoring[]
+}
+
+model Grade {
+  id        Int       @id @default(autoincrement())
+  name      String    @unique
+  createdAt DateTime  @default(now())
+
+  students  Student[]
+}
+
+model Subject {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  marks       Mark[]
+  monitorings Monitoring[]
+}
+
+model Monitoring {
+  id          Int       @id @default(autoincrement())
+  month       String
+  score       Int
+  student     Student   @relation(fields: [studentId], references: [id])
+  studentId   String
+  subject     Subject   @relation(fields: [subjectId], references: [id])
+  subjectId   Int
+  studyYear   StudyYear @relation(fields: [studyYearId], references: [id], onDelete: Cascade)
+  studyYearId Int
+  createdAt   DateTime  @default(now())
+}
+
+model Mark {
+  id        Int      @id @default(autoincrement())
+  score     Int
+  student   Student  @relation(fields: [studentId], references: [id])
+  studentId String
+  subject   Subject  @relation(fields: [subjectId], references: [id])
+  subjectId Int
+  quarter   Quarter  @relation(fields: [quarterId], references: [id])
+  quarterId Int
+  createdAt DateTime @default(now())
+
+  @@unique([studentId, subjectId, quarterId], name: "student_subject_quarter_unique")
+}
