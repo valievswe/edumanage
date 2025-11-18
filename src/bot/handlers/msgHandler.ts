@@ -1,41 +1,95 @@
 import { bot } from "../bot";
-import { prisma } from "../../db/prisma";
-import { get } from "http";
+import {
+  BACK_BUTTON,
+  CANCEL_KEYBOARD,
+  MAIN_MENU_KEYBOARD,
+  RESULT_KEYBOARD,
+  SEARCH_AGAIN_BUTTON,
+  STUDENT_ID_BUTTON,
+} from "../constants/ui";
+import { fetchStudentInfo } from "../services/studentInfo";
+import { formatStudentInfoMessage } from "../utils/formatStudentInfo";
 
-const getStudentId: Record<number, boolean> = {}
+const awaitingStudentId = new Set<number>();
 
-export default function msgHandler(){
-    bot.on("message", async (msg)=>{
-        const chatId = msg.chat.id;
-        const txt = msg.text?.trim()
+const isStudentIdTrigger = (text: string) =>
+  text === STUDENT_ID_BUTTON || text === "Student ID" || text === "/student";
 
-        if(txt === "Student ID"){
-            getStudentId[chatId] = true;
-            await bot.sendMessage(chatId, "Iltimos o'quvchi IDsini kiriting:");
-            return;
-        }
+const isBackTrigger = (text: string) =>
+  text === BACK_BUTTON || text === "Orqaga" || text === "Back";
 
-        if(getStudentId[chatId]){
-            const studentId = msg.text?.trim(); 
+const promptForStudentId = async (chatId: number) => {
+  awaitingStudentId.add(chatId);
+  await bot.sendMessage(
+    chatId,
+    "Iltimos o'quvchi ID raqamini kiriting. Bekor qilish uchun \"⬅️ Orqaga\" tugmasidan foydalaning.",
+    { reply_markup: CANCEL_KEYBOARD },
+  );
+};
 
-            const student = await prisma.student.findUnique({where: {id: studentId}})
-        
-            if(student){
-                await bot.sendMessage(chatId, "Topildi")
-            }else{
-                await bot.sendMessage(chatId, "Topilmadi")
-            }
+const handleStudentLookup = async (chatId: number, studentId: string) => {
+  try {
+    await bot.sendChatAction(chatId, "typing");
+    const info = await fetchStudentInfo(studentId);
 
-            getStudentId[chatId] = false;
-            return;
-        }
+    if (!info) {
+      await bot.sendMessage(
+        chatId,
+        `❗️ ID <code>${studentId}</code> bo'yicha ma'lumot topilmadi. Iltimos, ID ni tekshirib qayta yuboring.`,
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
 
-        if(txt === "Orqaga"){
-            getStudentId[chatId] =false;
-            await bot.sendMessage(chatId, "Bekor qilindi!");
-            return;
-        }
+    const formatted = formatStudentInfoMessage(info);
+    awaitingStudentId.delete(chatId);
 
+    await bot.sendMessage(chatId, formatted, {
+      parse_mode: "HTML",
+      reply_markup: RESULT_KEYBOARD,
+    });
+  } catch (error) {
+    console.error("Failed to fetch student data", error);
+    awaitingStudentId.delete(chatId);
+    await bot.sendMessage(
+      chatId,
+      "Kutilmagan xatolik yuz berdi. Bir necha soniyadan so'ng qayta urinib ko'ring.",
+      {
+        reply_markup: MAIN_MENU_KEYBOARD,
+      },
+    );
+  }
+};
 
-    })
+export default function msgHandler() {
+  bot.on("message", async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text?.trim();
+
+    if (!text) {
+      if (awaitingStudentId.has(chatId)) {
+        await bot.sendMessage(chatId, "Iltimos, faqat matn ko'rinishidagi ID yuboring.", {
+          reply_markup: CANCEL_KEYBOARD,
+        });
+      }
+      return;
+    }
+
+    if (isStudentIdTrigger(text) || text === SEARCH_AGAIN_BUTTON) {
+      await promptForStudentId(chatId);
+      return;
+    }
+
+    if (isBackTrigger(text)) {
+      awaitingStudentId.delete(chatId);
+      await bot.sendMessage(chatId, "Asosiy menyuga qaytdik. Kerakli bo'limni tanlang.", {
+        reply_markup: MAIN_MENU_KEYBOARD,
+      });
+      return;
+    }
+
+    if (awaitingStudentId.has(chatId)) {
+      await handleStudentLookup(chatId, text);
+    }
+  });
 }

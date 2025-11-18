@@ -3,6 +3,7 @@ import fs from "fs";
 import {prisma} from "../../db/prisma"
 import tgbot, {SendPhotoOptions } from "node-telegram-bot-api"
 import path from "path"
+import { MAIN_MENU_KEYBOARD, STUDENT_ID_BUTTON } from "../constants/ui";
 
 export default function startCommand(bot: tgbot){
     bot.onText(/\/start/, async (msg)=>{
@@ -14,10 +15,11 @@ export default function startCommand(bot: tgbot){
 
         const chatId = msg.chat.id;
         const starttxt = `
-Assalomu alaykum KLS liderboardga xush kelibsiz
+Assalomu alaykum KLS liderboard botiga xush kelibsiz!
 
-Ushbu bot orqali siz o'quvchi ID raqami bilan uning chorak va monitoring baholarini olishingiz mumkin!
-        `
+Bu yerda siz o'quvchi ID raqamidan foydalanib chorak (chorak) va monitoring baholarini darhol olishingiz mumkin.
+
+Qidiruvni boshlash uchun "${STUDENT_ID_BUTTON}" tugmasini tanlang.`
 
       
 
@@ -30,17 +32,9 @@ Ushbu bot orqali siz o'quvchi ID raqami bilan uning chorak va monitoring baholar
         }
 
         const rplBtn: SendPhotoOptions = {
-            caption: `<b>${starttxt}</b>`,
+            caption: `<b>${starttxt.trim()}</b>`,
             parse_mode: "HTML",
-            reply_markup:{
-                keyboard: [
-                    [{text: "Student ID"}],
-                    [{text: "Back"}]
-                ],
-                resize_keyboard:true,
-                one_time_keyboard:false,
-            },
-
+            reply_markup: MAIN_MENU_KEYBOARD,
         }
 
         bot.sendPhoto(chatId, photoStream, rplBtn)
