@@ -23,7 +23,7 @@ Qidiruvni boshlash uchun "${STUDENT_ID_BUTTON}" tugmasini tanlang.`
 
       
 
-        const imgPath = path.join(__dirname, "../../assets/image.png")
+        const imgPath = path.join(__dirname, "../../../src/assets/image.png")
         const exists = await prisma.user.findUnique({where:{tgId}});
         
         const photoStream = fs.createReadStream(imgPath);
