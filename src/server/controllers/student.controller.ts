@@ -32,10 +32,24 @@ export const getStudentById = async (req: Request, res: Response) => {
     const { id } = req.params;
     const student = await prisma.student.findUnique({
       where: { id },
-      include: { marks: true, monitorings: true, grade: true },
+      include: { grade: true, studyYear: true },
     });
     if (!student) return res.status(404).json({ message: "Student not found" });
-    res.json(student);
+
+    const [marks, monitorings] = await Promise.all([
+      prisma.mark.findMany({
+        where: { studentId: student.id, quarter: { studyYearId: student.studyYearId } },
+        include: { subject: true, quarter: true },
+        orderBy: [{ quarterId: "asc" }, { subject: { name: "asc" } }],
+      }),
+      prisma.monitoring.findMany({
+        where: { studentId: student.id, studyYearId: student.studyYearId },
+        include: { subject: true },
+        orderBy: [{ subject: { name: "asc" } }, { month: "asc" }, { createdAt: "asc" }],
+      }),
+    ]);
+
+    res.json({ ...student, marks, monitorings });
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch student", error: err });
   }
@@ -64,28 +78,36 @@ export const getStudentMarks = async (req: Request, res: Response) => {
     const student = await prisma.student.findUnique({
       where: { id },
       include: {
-        marks: {
-          include: { subject: true, quarter: true },
-        },
-        monitorings: {
-          include: { subject: true },
-        },
         grade: true,
+        studyYear: true,
       },
     });
 
     if (!student) return res.status(404).json({ message: "Student not found" });
 
+    const [marks, monitorings] = await Promise.all([
+      prisma.mark.findMany({
+        where: { studentId: student.id, quarter: { studyYearId: student.studyYearId } },
+        include: { subject: true, quarter: true },
+        orderBy: [{ quarterId: "asc" }, { subject: { name: "asc" } }],
+      }),
+      prisma.monitoring.findMany({
+        where: { studentId: student.id, studyYearId: student.studyYearId },
+        include: { subject: true },
+        orderBy: [{ subject: { name: "asc" } }, { month: "asc" }, { createdAt: "asc" }],
+      }),
+    ]);
+
     res.json({
       id: student.id,
       name: student.fullName,
       grade: student.grade?.name,
-      marks: student.marks.map((m) => ({
+      marks: marks.map((m) => ({
         subject: m.subject.name,
         quarter: m.quarter.name,
         score: m.score,
       })),
-      monitoring: student.monitorings.map((m) => ({
+      monitoring: monitorings.map((m) => ({
         subject: m.subject.name,
         month: m.month,
         score: m.score,

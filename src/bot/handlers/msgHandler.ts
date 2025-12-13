@@ -13,6 +13,7 @@ import {
   formatQuarterDetails,
   formatStudentSummary,
 } from "../utils/formatStudentInfo";
+import { buildStudentPdf } from "../utils/studentPdf";
 
 const awaitingStudentId = new Set<number>();
 
@@ -52,6 +53,15 @@ const MONTH_KEYWORDS = [
   "december",
 ];
 
+const parseYearMonth = (value: string): number | null => {
+  const match = value.trim().match(/^(\d{4})-(0[1-9]|1[0-2])$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return null;
+  return year * 12 + (month - 1);
+};
+
 const isStudentIdTrigger = (text: string) =>
   text === STUDENT_ID_BUTTON || text === "Student ID" || text === "/student";
 
@@ -83,6 +93,12 @@ const collectMonths = (info: StudentInfo): string[] => {
   });
 
   return months.sort((a, b) => {
+    const ymA = parseYearMonth(a);
+    const ymB = parseYearMonth(b);
+    if (ymA != null && ymB != null) return ymA - ymB;
+    if (ymA != null) return -1;
+    if (ymB != null) return 1;
+
     const rankA = getMonthRank(a);
     const rankB = getMonthRank(b);
     if (rankA === rankB) {
@@ -233,6 +249,24 @@ const handleStudentLookup = async (chatId: number, studentId: string) => {
       reply_markup: MAIN_MENU_KEYBOARD,
     });
     await sendModeSelection(chatId, info);
+
+    // Send a PDF snapshot right after the text summary (best-effort).
+    try {
+      const pdf = await buildStudentPdf(info);
+      await bot.sendDocument(
+        chatId,
+        pdf,
+        {
+          caption: "📄 O'quvchi ma'lumotlari (PDF)",
+        },
+        {
+          filename: `student-${info.id}-${info.studyYearName}.pdf`,
+          contentType: "application/pdf",
+        },
+      );
+    } catch (pdfError) {
+      console.error("Failed to generate/send PDF", pdfError);
+    }
   } catch (error) {
     console.error("Failed to fetch student data", error);
     awaitingStudentId.delete(chatId);

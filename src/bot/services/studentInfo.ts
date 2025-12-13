@@ -37,14 +37,6 @@ export const fetchStudentInfo = async (studentId: string): Promise<StudentInfo |
     include: {
       grade: true,
       studyYear: true,
-      marks: {
-        include: { subject: true, quarter: true },
-        orderBy: [{ quarterId: "asc" }, { subject: { name: "asc" } }],
-      },
-      monitorings: {
-        include: { subject: true },
-        orderBy: [{ subject: { name: "asc" } }, { month: "asc" }, { createdAt: "asc" }],
-      },
     },
   });
 
@@ -52,10 +44,29 @@ export const fetchStudentInfo = async (studentId: string): Promise<StudentInfo |
     return null;
   }
 
+  const [marks, monitoringsRaw] = await Promise.all([
+    prisma.mark.findMany({
+      where: {
+        studentId: student.id,
+        quarter: { studyYearId: student.studyYearId },
+      },
+      include: { subject: true, quarter: true },
+      orderBy: [{ quarterId: "asc" }, { subject: { name: "asc" } }],
+    }),
+    prisma.monitoring.findMany({
+      where: {
+        studentId: student.id,
+        studyYearId: student.studyYearId,
+      },
+      include: { subject: true },
+      orderBy: [{ subject: { name: "asc" } }, { month: "asc" }, { createdAt: "asc" }],
+    }),
+  ]);
+
   type QuarterAccumulator = QuarterMarks & { orderIndex: number };
   const quarterMap = new Map<number, QuarterAccumulator>();
 
-  student.marks.forEach((mark) => {
+  marks.forEach((mark) => {
     const existingQuarter = quarterMap.get(mark.quarterId);
     if (existingQuarter) {
       existingQuarter.subjects.push({
@@ -84,23 +95,61 @@ export const fetchStudentInfo = async (studentId: string): Promise<StudentInfo |
 
   const monitoringMap = new Map<number, SubjectMonitoring>();
 
-  student.monitorings.forEach((monitoring) => {
+  type EntryWithCreatedAt = MonitoringEntry & { createdAt: Date };
+  const parseYearMonth = (value: string): number | null => {
+    const match = value.trim().match(/^(\d{4})-(0[1-9]|1[0-2])$/);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    if (!Number.isFinite(year) || !Number.isFinite(month)) return null;
+    return year * 12 + (month - 1);
+  };
+
+  monitoringsRaw.forEach((monitoring) => {
     const existing = monitoringMap.get(monitoring.subjectId);
+    const entry: EntryWithCreatedAt = {
+      month: monitoring.month,
+      score: monitoring.score,
+      createdAt: monitoring.createdAt,
+    };
+
     if (existing) {
-      existing.entries.push({ month: monitoring.month, score: monitoring.score });
+      const collision = existing.entries.find((e) => e.month === entry.month) as EntryWithCreatedAt | undefined;
+      if (!collision) {
+        existing.entries.push(entry);
+        return;
+      }
+      if (entry.createdAt > collision.createdAt) {
+        collision.score = entry.score;
+        collision.createdAt = entry.createdAt;
+      }
       return;
     }
 
     monitoringMap.set(monitoring.subjectId, {
       subjectId: monitoring.subjectId,
       subjectName: monitoring.subject.name,
-      entries: [{ month: monitoring.month, score: monitoring.score }],
+      entries: [entry],
     });
   });
 
   const monitorings = Array.from(monitoringMap.values()).sort((a, b) =>
     a.subjectName.localeCompare(b.subjectName, "uz"),
   );
+
+  monitorings.forEach((subject) => {
+    subject.entries.sort((a, b) => {
+      const ymA = parseYearMonth(a.month);
+      const ymB = parseYearMonth(b.month);
+      if (ymA != null && ymB != null) return ymA - ymB;
+      if (ymA != null) return -1;
+      if (ymB != null) return 1;
+      return a.month.localeCompare(b.month, "uz");
+    });
+    subject.entries.forEach((entry) => {
+      delete (entry as EntryWithCreatedAt).createdAt;
+    });
+  });
 
   return {
     id: student.id,
@@ -111,4 +160,3 @@ export const fetchStudentInfo = async (studentId: string): Promise<StudentInfo |
     monitorings,
   };
 };
-

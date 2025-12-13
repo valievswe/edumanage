@@ -5,6 +5,7 @@ import {
   createMonitoring,
   updateMonitoring,
   deleteMonitoring,
+  upsertBulkMonitoring,
 } from "../controllers/monitoring.controller";
 import { verifyAdmin } from "../middleware/auth.middleare";
 
@@ -28,6 +29,7 @@ const router = Router();
  * @param {number} studyYearId.query - Study year filter
  * @param {number} gradeId.query - Grade filter
  * @param {string} search.query - Student name or ID
+ * @param {string} month.query - Month filter (recommended format: YYYY-MM)
  * @return {array<object>} 200 - Monitoring list
  */
 router.get("/", verifyAdmin, getMonitorings);
@@ -52,6 +54,32 @@ router.get("/:id", verifyAdmin, getMonitoringById);
  * @return {object} 201 - Created monitoring entry
  */
 router.post("/", verifyAdmin, createMonitoring);
+
+/**
+ * Bulk monitoring payload
+ * @typedef {object} MonitoringBulkEntry
+ * @property {string} studentId.required - Student identifier
+ * @property {number} subjectId.required - Subject ID
+ * @property {number} studyYearId.required - Study year ID
+ * @property {string} month.required - Month (recommended format: YYYY-MM)
+ * @property {number} score.required - Numeric score
+ */
+
+/**
+ * @typedef {object} MonitoringBulkRequest
+ * @property {Array<MonitoringBulkEntry>} entries.required - Monitoring entries to upsert
+ */
+
+/**
+ * POST /api/monitoring/bulk
+ * @summary Upsert many monitoring entries at once
+ * @tags Monitoring
+ * @param {string} Authorization.header.required - Bearer access token
+ * @param {MonitoringBulkRequest} request.body.required - Entries to upsert
+ * @return {object} 200 - Summary of upserts
+ * @return {object} 400 - Invalid payload
+ */
+router.post("/bulk", verifyAdmin, upsertBulkMonitoring);
 
 /**
  * PUT /api/monitoring/{id}

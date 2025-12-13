@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import api from '@/utils/api'
 import type { Grade, Mark, Student, Subject, Quarter, StudyYear } from '@/utils/types'
+import { readFirstSheetAsTable } from '@/utils/xlsxTable'
 
 const marks = ref<Mark[]>([])
 const students = ref<Student[]>([])
@@ -40,11 +41,23 @@ const bulkSelections = reactive({
 const bulkScores = reactive<Record<string, number | null>>({})
 const bulkSubmitting = ref(false)
 
+const snackbar = reactive({ visible: false, color: 'success', text: '' })
+const showSnackbar = (text: string, color: string = 'success') => {
+  snackbar.text = text
+  snackbar.color = color
+  snackbar.visible = true
+}
+
 const filteredStudents = computed(() => students.value)
 
 const quarterOptions = computed(() => {
   if (!bulkSelections.studyYearId) return quarters.value
   return quarters.value.filter(q => q.studyYearId === bulkSelections.studyYearId)
+})
+
+const importQuarterOptions = computed(() => {
+  if (!importForm.studyYearId) return quarters.value
+  return quarters.value.filter(q => q.studyYearId === importForm.studyYearId)
 })
 
 const markKey = (studentId: string, subjectId: number, quarterId: number) =>
@@ -270,6 +283,166 @@ const saveBulkMarks = async () => {
   }
 }
 
+// ===== XLSX import (grade-wide, multi-subject) =====
+const importDialog = ref(false)
+const importSubmitting = ref(false)
+const importFileName = ref('')
+const importErrors = ref<string[]>([])
+const importSummary = reactive({ students: 0, subjects: 0, entries: 0 })
+const importEntries = ref<Array<{ studentId: string; subjectId: number; quarterId: number; score: number }>>([])
+const importStudents = ref<Student[]>([])
+const importInputEl = ref<HTMLInputElement | null>(null)
+
+const importForm = reactive({
+  studyYearId: null as number | null,
+  gradeId: null as number | null,
+  quarterId: null as number | null,
+})
+
+const resetImport = () => {
+  importFileName.value = ''
+  importErrors.value = []
+  importEntries.value = []
+  importSummary.students = 0
+  importSummary.subjects = 0
+  importSummary.entries = 0
+}
+
+const openImportDialog = () => {
+  resetImport()
+  importForm.studyYearId = bulkSelections.studyYearId
+  importForm.gradeId = bulkSelections.gradeId
+  importForm.quarterId = bulkSelections.quarterId
+  importDialog.value = true
+}
+
+const fetchImportStudents = async () => {
+  if (!importForm.studyYearId) {
+    importStudents.value = []
+    return
+  }
+  const { data } = await api.get<Student[]>('/api/students', {
+    params: {
+      studyYearId: importForm.studyYearId,
+      gradeId: importForm.gradeId || undefined,
+    },
+  })
+  importStudents.value = data
+}
+
+const normalizeKey = (value: string) => value.trim().toLowerCase().replace(/[\s_]+/g, '')
+const findStudentIdHeader = (headers: string[]) =>
+  headers.find(h => ['studentid', 'student_id', 'id'].includes(normalizeKey(h))) ?? null
+
+const parseScore = (value: unknown): number | null => {
+  if (typeof value === 'number')
+    return Number.isFinite(value) ? value : null
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+const onPickImportFile = () => importInputEl.value?.click()
+
+const onImportFileSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+
+  resetImport()
+  importFileName.value = file.name
+
+  if (!importForm.studyYearId || !importForm.quarterId) {
+    importErrors.value = ['Select study year and quarter before selecting a file.']
+    return
+  }
+
+  await fetchImportStudents()
+  const allowedStudents = new Map(importStudents.value.map(s => [s.id, s]))
+
+  const subjectByName = new Map(subjects.value.map(s => [normalizeKey(s.name), s.id]))
+
+  const table = await readFirstSheetAsTable(file)
+  const studentIdHeader = findStudentIdHeader(table.headers)
+  if (!studentIdHeader) {
+    importErrors.value = ['Missing required column: studentId']
+    return
+  }
+
+  const ignoredHeaders = new Set([studentIdHeader, 'fullName', 'full name', 'fullname', 'name'].map(normalizeKey))
+  const subjectHeaders = table.headers.filter(h => !ignoredHeaders.has(normalizeKey(h)))
+
+  const unknownSubjects = subjectHeaders.filter(h => !subjectByName.has(normalizeKey(h)))
+  if (unknownSubjects.length) {
+    importErrors.value.push(
+      `Unknown subject columns: ${unknownSubjects.slice(0, 10).join(', ')}${unknownSubjects.length > 10 ? '…' : ''}`,
+    )
+  }
+
+  const errors: string[] = []
+  const entries: Array<{ studentId: string; subjectId: number; quarterId: number; score: number }> = []
+  const studentsSeen = new Set<string>()
+  const subjectsSeen = new Set<number>()
+
+  table.rows.forEach((row, index) => {
+    const rowNumber = index + 2
+    const rawStudentId = row[studentIdHeader]
+    const studentId = typeof rawStudentId === 'string' ? rawStudentId.trim() : String(rawStudentId ?? '').trim()
+    if (!studentId) return
+
+    if (!allowedStudents.has(studentId)) {
+      errors.push(`Row ${rowNumber}: studentId "${studentId}" not found in selected study year/grade`)
+      return
+    }
+
+    studentsSeen.add(studentId)
+
+    subjectHeaders.forEach(header => {
+      const subjectId = subjectByName.get(normalizeKey(header))
+      if (!subjectId) return
+      const score = parseScore(row[header])
+      if (score == null) return
+      subjectsSeen.add(subjectId)
+      entries.push({
+        studentId,
+        subjectId,
+        quarterId: importForm.quarterId!,
+        score,
+      })
+    })
+  })
+
+  importEntries.value = entries
+  importSummary.students = studentsSeen.size
+  importSummary.subjects = subjectsSeen.size
+  importSummary.entries = entries.length
+  importErrors.value = [...importErrors.value, ...errors.slice(0, 50)]
+}
+
+const submitImport = async () => {
+  if (!importEntries.value.length) return
+  importSubmitting.value = true
+  try {
+    const chunkSize = 500
+    for (let i = 0; i < importEntries.value.length; i += chunkSize) {
+      const chunk = importEntries.value.slice(i, i + chunkSize)
+      await api.post('/api/marks/bulk', { entries: chunk })
+    }
+    await fetchMarks()
+    showSnackbar(`Imported ${importSummary.entries} marks`)
+    importDialog.value = false
+  } catch (err: any) {
+    const message = err?.response?.data?.message || 'Failed to import marks.'
+    importErrors.value = [message, ...importErrors.value]
+    showSnackbar('Failed to import marks', 'error')
+  } finally {
+    importSubmitting.value = false
+  }
+}
+
 onMounted(async () => {
   await Promise.all([fetchMarks(), fetchOptions()])
 })
@@ -315,6 +488,14 @@ watch(marks, () => {
           @click="fetchMarks"
         >
           Refresh
+        </VBtn>
+        <VBtn
+          variant="outlined"
+          color="primary"
+          :loading="optionsLoading"
+          @click="openImportDialog"
+        >
+          Import XLSX
         </VBtn>
         <VBtn
           color="primary"
@@ -657,5 +838,120 @@ watch(marks, () => {
         </VCardActions>
       </VCard>
     </VDialog>
+
+    <VDialog
+      v-model="importDialog"
+      max-width="760"
+    >
+      <VCard>
+        <VCardTitle>Import marks from XLSX</VCardTitle>
+        <VCardSubtitle>
+          First column must be <code>studentId</code>; each subject is a separate column header (exact subject name).
+        </VCardSubtitle>
+        <VCardText>
+          <VRow>
+            <VCol cols="12" md="4">
+              <VSelect
+                v-model="importForm.studyYearId"
+                :items="years"
+                item-title="name"
+                item-value="id"
+                label="Study year"
+                :loading="optionsLoading"
+                @update:model-value="resetImport"
+              />
+            </VCol>
+            <VCol cols="12" md="4">
+              <VSelect
+                v-model="importForm.gradeId"
+                :items="grades"
+                item-title="name"
+                item-value="id"
+                label="Grade (optional)"
+                clearable
+                @update:model-value="resetImport"
+              />
+            </VCol>
+            <VCol cols="12" md="4">
+            <VSelect
+              v-model="importForm.quarterId"
+              :items="importQuarterOptions"
+              item-title="name"
+              item-value="id"
+              label="Quarter"
+              :disabled="!importForm.studyYearId"
+              @update:model-value="resetImport"
+            />
+            </VCol>
+          </VRow>
+
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            <VBtn
+              color="primary"
+              variant="outlined"
+              :disabled="!importForm.studyYearId || !importForm.quarterId"
+              @click="onPickImportFile"
+            >
+              Choose XLSX file
+            </VBtn>
+            <span v-if="importFileName" class="text-medium-emphasis align-self-center">{{ importFileName }}</span>
+            <input
+              ref="importInputEl"
+              type="file"
+              accept=".xlsx,.xls"
+              hidden
+              @change="onImportFileSelected"
+            >
+          </div>
+
+          <VAlert
+            v-if="importErrors.length"
+            type="warning"
+            variant="tonal"
+            class="mt-4"
+          >
+            <div v-for="(err, idx) in importErrors" :key="idx">
+              {{ err }}
+            </div>
+          </VAlert>
+
+          <VAlert
+            v-if="importSummary.entries"
+            type="info"
+            variant="tonal"
+            class="mt-4"
+          >
+            Parsed {{ importSummary.entries }} marks for {{ importSummary.students }} students across
+            {{ importSummary.subjects }} subjects.
+          </VAlert>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn
+            variant="text"
+            @click="importDialog = false"
+          >
+            Cancel
+          </VBtn>
+          <VBtn
+            color="primary"
+            :disabled="!importSummary.entries || importErrors.length > 0"
+            :loading="importSubmitting"
+            @click="submitImport"
+          >
+            Import
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <VSnackbar
+      v-model="snackbar.visible"
+      :color="snackbar.color"
+      location="bottom end"
+      timeout="2500"
+    >
+      {{ snackbar.text }}
+    </VSnackbar>
   </div>
 </template>

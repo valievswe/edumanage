@@ -9,10 +9,15 @@ const dialog = ref(false)
 const saving = ref(false)
 const errorMessage = ref('')
 const editingYear = ref<StudyYear | null>(null)
+const snackbar = reactive({ visible: false, color: 'success', text: '' })
 
 const quarterDialog = ref(false)
 const quarterSaving = ref(false)
 const selectedYearId = ref<number | null>(null)
+
+const rolloverDialog = ref(false)
+const rolloverSaving = ref(false)
+const rolloverSource = ref<StudyYear | null>(null)
 
 const form = reactive({
   name: '',
@@ -26,6 +31,16 @@ const quarterForm = reactive({
   endDate: '',
 })
 
+const rolloverForm = reactive({
+  name: '',
+  startDate: '',
+  endDate: '',
+  moveStudents: true,
+  incrementGrades: true,
+  copyQuarters: true,
+  graduateAt: 11,
+})
+
 const fetchYears = async () => {
   loading.value = true
   errorMessage.value = ''
@@ -37,6 +52,12 @@ const fetchYears = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const showSnackbar = (text: string, color: string = 'success') => {
+  snackbar.text = text
+  snackbar.color = color
+  snackbar.visible = true
 }
 
 const resetYearForm = () => {
@@ -70,8 +91,10 @@ const saveYear = async () => {
     editingYear.value = null
     resetYearForm()
     await fetchYears()
+    showSnackbar('Study year saved')
   } catch (err: any) {
     errorMessage.value = err?.response?.data?.message || 'Failed to save study year.'
+    showSnackbar('Failed to save study year', 'error')
   } finally {
     saving.value = false
   }
@@ -82,8 +105,10 @@ const deleteYear = async (year: StudyYear) => {
   try {
     await api.delete(`/api/years/${year.id}`)
     await fetchYears()
+    showSnackbar('Study year deleted')
   } catch (err: any) {
     errorMessage.value = err?.response?.data?.message || 'Failed to delete study year.'
+    showSnackbar('Failed to delete study year', 'error')
   }
 }
 
@@ -93,6 +118,68 @@ const openQuarterDialog = (yearId: number) => {
   quarterForm.startDate = ''
   quarterForm.endDate = ''
   quarterDialog.value = true
+}
+
+const suggestNextYearName = (name: string) => {
+  const matches = [...name.matchAll(/\b(19|20)\d{2}\b/g)]
+  if (!matches.length)
+    return `${name} (next)`
+
+  const updated = matches.reduceRight((acc, match) => {
+    const year = Number(match[0])
+    if (!Number.isFinite(year) || match.index == null) return acc
+    return `${acc.slice(0, match.index)}${year + 1}${acc.slice(match.index + match[0].length)}`
+  }, name)
+
+  return updated
+}
+
+const suggestNextDate = (isoDate: string) => {
+  const date = new Date(isoDate)
+  if (Number.isNaN(date.getTime())) return ''
+  date.setFullYear(date.getFullYear() + 1)
+  return date.toISOString().slice(0, 10)
+}
+
+const openRolloverDialog = (year: StudyYear) => {
+  rolloverSource.value = year
+  rolloverForm.name = suggestNextYearName(year.name)
+  rolloverForm.startDate = suggestNextDate(year.startDate)
+  rolloverForm.endDate = suggestNextDate(year.endDate)
+  rolloverForm.moveStudents = true
+  rolloverForm.incrementGrades = true
+  rolloverForm.copyQuarters = true
+  rolloverForm.graduateAt = 11
+  rolloverDialog.value = true
+}
+
+const runRollover = async () => {
+  if (!rolloverSource.value) return
+  if (!rolloverForm.name || !rolloverForm.startDate || !rolloverForm.endDate) return
+  rolloverSaving.value = true
+  errorMessage.value = ''
+  try {
+    const { data } = await api.post(`/api/years/${rolloverSource.value.id}/rollover`, {
+      name: rolloverForm.name,
+      startDate: rolloverForm.startDate,
+      endDate: rolloverForm.endDate,
+      moveStudents: rolloverForm.moveStudents,
+      incrementGrades: rolloverForm.incrementGrades,
+      copyQuarters: rolloverForm.copyQuarters,
+      graduateAt: rolloverForm.graduateAt,
+    })
+    rolloverDialog.value = false
+    rolloverSource.value = null
+    await fetchYears()
+    showSnackbar(
+      `Rollover done: ${data.studentsMoved ?? 0} moved, ${data.studentsGradeIncremented ?? 0} promoted, ${data.graduatesSkipped ?? 0} graduated, ${data.quartersCopied ?? 0} quarters copied.`,
+    )
+  } catch (err: any) {
+    errorMessage.value = err?.response?.data?.message || 'Failed to rollover study year.'
+    showSnackbar('Failed to rollover study year', 'error')
+  } finally {
+    rolloverSaving.value = false
+  }
 }
 
 const saveQuarter = async () => {
@@ -107,8 +194,10 @@ const saveQuarter = async () => {
     })
     quarterDialog.value = false
     await fetchYears()
+    showSnackbar('Quarter created')
   } catch (err: any) {
     errorMessage.value = err?.response?.data?.message || 'Failed to create quarter.'
+    showSnackbar('Failed to create quarter', 'error')
   } finally {
     quarterSaving.value = false
   }
@@ -127,7 +216,7 @@ onMounted(fetchYears)
           Study years
         </h2>
         <p class="text-medium-emphasis">
-          Add custom ranges to group students, quarters, and monitoring entries.
+          Add custom ranges to group students, quarters, and monitoring entries. Use rollover to create the next year, promote grades, and shift quarter dates.
         </p>
       </div>
       <div class="d-flex gap-3">
@@ -196,6 +285,12 @@ onMounted(fetchYears)
               icon="ri-pencil-line"
               class="me-2"
               @click="openYearDialog(year)"
+            />
+            <VBtn
+              variant="text"
+              icon="ri-arrow-right-line"
+              class="me-2"
+              @click="openRolloverDialog(year)"
             />
             <VBtn
               variant="text"
@@ -317,5 +412,93 @@ onMounted(fetchYears)
         </VCardActions>
       </VCard>
     </VDialog>
+
+    <VDialog
+      v-model="rolloverDialog"
+      max-width="520"
+    >
+      <VCard>
+        <VCardTitle>Rollover to next study year</VCardTitle>
+        <VCardSubtitle v-if="rolloverSource">
+          Source: {{ rolloverSource.name }}
+        </VCardSubtitle>
+        <VCardSubtitle v-else>
+          Creates a new year, shifts quarter dates, promotes grades, and keeps graduates in the old year.
+        </VCardSubtitle>
+        <VCardText>
+          <VForm @submit.prevent="runRollover">
+            <VTextField
+              v-model="rolloverForm.name"
+              label="New study year name"
+              required
+            />
+            <VTextField
+              v-model="rolloverForm.startDate"
+              label="Start date"
+              type="date"
+              class="mt-4"
+              required
+            />
+            <VTextField
+              v-model="rolloverForm.endDate"
+              label="End date"
+              type="date"
+              class="mt-4"
+              required
+            />
+
+            <VSwitch
+              v-model="rolloverForm.moveStudents"
+              label="Move students to the new year"
+              class="mt-4"
+              inset
+            />
+            <VSwitch
+              v-model="rolloverForm.incrementGrades"
+              :disabled="!rolloverForm.moveStudents"
+              label="Increment grades while moving"
+              inset
+            />
+            <VSwitch
+              v-model="rolloverForm.copyQuarters"
+              label="Copy quarter names into the new year"
+              inset
+            />
+            <VTextField
+              v-model.number="rolloverForm.graduateAt"
+              type="number"
+              min="1"
+              label="Graduate at grade number (e.g. 11)"
+              class="mt-2"
+            />
+          </VForm>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn
+            variant="text"
+            @click="() => { rolloverDialog = false; rolloverSource = null }"
+          >
+            Cancel
+          </VBtn>
+          <VBtn
+            color="primary"
+            :loading="rolloverSaving"
+            @click="runRollover"
+          >
+            Run rollover
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <VSnackbar
+      v-model="snackbar.visible"
+      :color="snackbar.color"
+      location="bottom end"
+      timeout="2500"
+    >
+      {{ snackbar.text }}
+    </VSnackbar>
   </div>
 </template>

@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import api from '@/utils/api'
 import type { Grade, Monitoring, Student, Subject, StudyYear } from '@/utils/types'
+import { readFirstSheetAsTable } from '@/utils/xlsxTable'
 
 const monitoring = ref<Monitoring[]>([])
 const students = ref<Student[]>([])
@@ -12,6 +13,26 @@ const grades = ref<Grade[]>([])
 const loading = ref(false)
 const optionsLoading = ref(false)
 const errorMessage = ref('')
+const snackbar = reactive({ visible: false, color: 'success', text: '' })
+const deletingId = ref<number | null>(null)
+
+// XLSX import (grade-wide, multi-subject for a given month)
+const importDialog = ref(false)
+const importSubmitting = ref(false)
+const importFileName = ref('')
+const importErrors = ref<string[]>([])
+const importSummary = reactive({ students: 0, subjects: 0, entries: 0 })
+const importEntries = ref<
+  Array<{ studentId: string; subjectId: number; studyYearId: number; month: string; score: number }>
+>([])
+const importStudents = ref<Student[]>([])
+const importInputEl = ref<HTMLInputElement | null>(null)
+
+const importForm = reactive({
+  studyYearId: null as number | null,
+  gradeId: null as number | null,
+  month: '',
+})
 
 const createDialog = ref(false)
 const createLoading = ref(false)
@@ -38,6 +59,7 @@ const filters = reactive({
   search: '',
   gradeId: null as number | null,
   studyYearId: null as number | null,
+  month: '',
 })
 
 const headers = [
@@ -59,6 +81,7 @@ const fetchMonitoring = async () => {
         search: filters.search || undefined,
         gradeId: filters.gradeId || undefined,
         studyYearId: filters.studyYearId || undefined,
+        month: filters.month || undefined,
       },
     })
     monitoring.value = data
@@ -67,6 +90,19 @@ const fetchMonitoring = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const showSnackbar = (text: string, color: string = 'success') => {
+  snackbar.text = text
+  snackbar.color = color
+  snackbar.visible = true
+}
+
+const formatMonth = (value: string) => {
+  const match = value.match(/^(\d{4})-(0[1-9]|1[0-2])$/)
+  if (!match) return value
+  const [year, month] = [match[1], match[2]]
+  return `${year}-${month}`
 }
 
 const fetchOptions = async () => {
@@ -117,6 +153,149 @@ const fetchOptions = async () => {
   }
 }
 
+const resetImport = () => {
+  importFileName.value = ''
+  importErrors.value = []
+  importEntries.value = []
+  importSummary.students = 0
+  importSummary.subjects = 0
+  importSummary.entries = 0
+}
+
+const openImportDialog = () => {
+  resetImport()
+  importForm.studyYearId = filters.studyYearId
+  importForm.gradeId = filters.gradeId
+  importForm.month = filters.month
+  importDialog.value = true
+}
+
+const fetchImportStudents = async () => {
+  if (!importForm.studyYearId) {
+    importStudents.value = []
+    return
+  }
+  const { data } = await api.get<Student[]>('/api/students', {
+    params: {
+      studyYearId: importForm.studyYearId,
+      gradeId: importForm.gradeId || undefined,
+    },
+  })
+  importStudents.value = data
+}
+
+const normalizeKey = (value: string) => value.trim().toLowerCase().replace(/[\s_]+/g, '')
+const findStudentIdHeader = (headers: string[]) =>
+  headers.find(h => ['studentid', 'student_id', 'id'].includes(normalizeKey(h))) ?? null
+
+const parseScore = (value: unknown): number | null => {
+  if (typeof value === 'number')
+    return Number.isFinite(value) ? value : null
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+const onPickImportFile = () => importInputEl.value?.click()
+
+const onImportFileSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+
+  resetImport()
+  importFileName.value = file.name
+
+  if (!importForm.studyYearId || !importForm.month) {
+    importErrors.value = ['Select study year and month before selecting a file.']
+    return
+  }
+
+  await fetchImportStudents()
+  const allowedStudents = new Map(importStudents.value.map(s => [s.id, s]))
+  const subjectByName = new Map(subjects.value.map(s => [normalizeKey(s.name), s.id]))
+
+  const table = await readFirstSheetAsTable(file)
+  const studentIdHeader = findStudentIdHeader(table.headers)
+  if (!studentIdHeader) {
+    importErrors.value = ['Missing required column: studentId']
+    return
+  }
+
+  const ignoredHeaders = new Set([studentIdHeader, 'fullName', 'full name', 'fullname', 'name'].map(normalizeKey))
+  const subjectHeaders = table.headers.filter(h => !ignoredHeaders.has(normalizeKey(h)))
+
+  const unknownSubjects = subjectHeaders.filter(h => !subjectByName.has(normalizeKey(h)))
+  if (unknownSubjects.length) {
+    importErrors.value.push(
+      `Unknown subject columns: ${unknownSubjects.slice(0, 10).join(', ')}${unknownSubjects.length > 10 ? '…' : ''}`,
+    )
+  }
+
+  const errors: string[] = []
+  const entries: Array<{ studentId: string; subjectId: number; studyYearId: number; month: string; score: number }> = []
+  const studentsSeen = new Set<string>()
+  const subjectsSeen = new Set<number>()
+
+  table.rows.forEach((row, index) => {
+    const rowNumber = index + 2
+    const rawStudentId = row[studentIdHeader]
+    const studentId = typeof rawStudentId === 'string' ? rawStudentId.trim() : String(rawStudentId ?? '').trim()
+    if (!studentId) return
+
+    if (!allowedStudents.has(studentId)) {
+      errors.push(`Row ${rowNumber}: studentId "${studentId}" not found in selected study year/grade`)
+      return
+    }
+
+    studentsSeen.add(studentId)
+    subjectHeaders.forEach(header => {
+      const subjectId = subjectByName.get(normalizeKey(header))
+      if (!subjectId) return
+      const score = parseScore(row[header])
+      if (score == null) return
+      subjectsSeen.add(subjectId)
+      entries.push({
+        studentId,
+        subjectId,
+        studyYearId: importForm.studyYearId!,
+        month: importForm.month,
+        score,
+      })
+    })
+  })
+
+  importEntries.value = entries
+  importSummary.students = studentsSeen.size
+  importSummary.subjects = subjectsSeen.size
+  importSummary.entries = entries.length
+  importErrors.value = [...importErrors.value, ...errors.slice(0, 50)]
+}
+
+const submitImport = async () => {
+  if (!importEntries.value.length) return
+  importSubmitting.value = true
+  try {
+    const chunkSize = 500
+    for (let i = 0; i < importEntries.value.length; i += chunkSize) {
+      const chunk = importEntries.value.slice(i, i + chunkSize)
+      await api.post('/api/monitoring/bulk', { entries: chunk })
+    }
+    await fetchMonitoring()
+    showSnackbar(`Imported ${importSummary.entries} monitoring scores`)
+    importDialog.value = false
+  } catch (err: any) {
+    const message = err?.response?.data?.message || 'Failed to import monitoring.'
+    importErrors.value = [message, ...importErrors.value]
+    showSnackbar('Failed to import monitoring', 'error')
+  } finally {
+    importSubmitting.value = false
+  }
+}
+
 const resetForm = () => {
   createForm.studentId = ''
   createForm.subjectId = null
@@ -148,8 +327,10 @@ const createMonitoringEntry = async () => {
     createDialog.value = false
     resetForm()
     await fetchMonitoring()
+    showSnackbar('Monitoring entry saved')
   } catch (err: any) {
     errorMessage.value = err?.response?.data?.message || 'Failed to create monitoring entry.'
+    showSnackbar('Failed to save monitoring entry', 'error')
   } finally {
     createLoading.value = false
   }
@@ -168,10 +349,27 @@ const updateMonitoringEntry = async () => {
     editDialog.value = false
     editingEntry.value = null
     await fetchMonitoring()
+    showSnackbar('Monitoring entry updated')
   } catch (err: any) {
     errorMessage.value = err?.response?.data?.message || 'Failed to update entry.'
+    showSnackbar('Failed to update monitoring entry', 'error')
   } finally {
     editLoading.value = false
+  }
+}
+
+const deleteMonitoringEntry = async (entry: Monitoring) => {
+  if (!confirm('Delete this monitoring entry?')) return
+  deletingId.value = entry.id
+  try {
+    await api.delete(`/api/monitoring/${entry.id}`)
+    await fetchMonitoring()
+    showSnackbar('Monitoring entry deleted')
+  } catch (err: any) {
+    errorMessage.value = err?.response?.data?.message || 'Failed to delete entry.'
+    showSnackbar('Failed to delete monitoring entry', 'error')
+  } finally {
+    deletingId.value = null
   }
 }
 
@@ -199,6 +397,14 @@ onMounted(async () => {
           @click="fetchMonitoring"
         >
           Refresh
+        </VBtn>
+        <VBtn
+          variant="outlined"
+          color="primary"
+          :loading="optionsLoading"
+          @click="openImportDialog"
+        >
+          Import XLSX
         </VBtn>
         <VBtn
           color="primary"
@@ -253,6 +459,15 @@ onMounted(async () => {
               @update:model-value="fetchMonitoring"
             />
           </VCol>
+          <VCol cols="12" md="4">
+            <VTextField
+              v-model="filters.month"
+              type="month"
+              label="Month"
+              clearable
+              @update:model-value="fetchMonitoring"
+            />
+          </VCol>
         </VRow>
       </VCardText>
     </VCard>
@@ -272,6 +487,9 @@ onMounted(async () => {
       <template #item.subject="{ item }">
         {{ item.subject.name }}
       </template>
+      <template #item.month="{ item }">
+        {{ formatMonth(item.month) }}
+      </template>
       <template #item.year="{ item }">
         {{ item.studyYear.name }}
       </template>
@@ -280,6 +498,13 @@ onMounted(async () => {
           icon="ri-pencil-line"
           variant="text"
           @click="openEditDialog(item)"
+        />
+        <VBtn
+          icon="ri-delete-bin-6-line"
+          variant="text"
+          color="error"
+          :loading="deletingId === item.id"
+          @click="deleteMonitoringEntry(item)"
         />
       </template>
     </VDataTable>
@@ -384,6 +609,7 @@ onMounted(async () => {
               type="month"
               label="Month"
               class="mt-4"
+              required
             />
             <VTextField
               v-model.number="editForm.score"
@@ -413,5 +639,118 @@ onMounted(async () => {
         </VCardActions>
       </VCard>
     </VDialog>
+
+    <VDialog
+      v-model="importDialog"
+      max-width="760"
+    >
+      <VCard>
+        <VCardTitle>Import monitoring from XLSX</VCardTitle>
+        <VCardSubtitle>
+          First column must be <code>studentId</code>; each subject is a separate column header (exact subject name).
+        </VCardSubtitle>
+        <VCardText>
+          <VRow>
+            <VCol cols="12" md="4">
+              <VSelect
+                v-model="importForm.studyYearId"
+                :items="years"
+                item-title="name"
+                item-value="id"
+                label="Study year"
+                :loading="optionsLoading"
+                @update:model-value="resetImport"
+              />
+            </VCol>
+            <VCol cols="12" md="4">
+              <VSelect
+                v-model="importForm.gradeId"
+                :items="grades"
+                item-title="name"
+                item-value="id"
+                label="Grade (optional)"
+                clearable
+                @update:model-value="resetImport"
+              />
+            </VCol>
+            <VCol cols="12" md="4">
+              <VTextField
+                v-model="importForm.month"
+                type="month"
+                label="Month"
+                required
+                @update:model-value="resetImport"
+              />
+            </VCol>
+          </VRow>
+
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            <VBtn
+              color="primary"
+              variant="outlined"
+              :disabled="!importForm.studyYearId || !importForm.month"
+              @click="onPickImportFile"
+            >
+              Choose XLSX file
+            </VBtn>
+            <span v-if="importFileName" class="text-medium-emphasis align-self-center">{{ importFileName }}</span>
+            <input
+              ref="importInputEl"
+              type="file"
+              accept=".xlsx,.xls"
+              hidden
+              @change="onImportFileSelected"
+            >
+          </div>
+
+          <VAlert
+            v-if="importErrors.length"
+            type="warning"
+            variant="tonal"
+            class="mt-4"
+          >
+            <div v-for="(err, idx) in importErrors" :key="idx">
+              {{ err }}
+            </div>
+          </VAlert>
+
+          <VAlert
+            v-if="importSummary.entries"
+            type="info"
+            variant="tonal"
+            class="mt-4"
+          >
+            Parsed {{ importSummary.entries }} monitoring scores for {{ importSummary.students }} students across
+            {{ importSummary.subjects }} subjects.
+          </VAlert>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn
+            variant="text"
+            @click="importDialog = false"
+          >
+            Cancel
+          </VBtn>
+          <VBtn
+            color="primary"
+            :disabled="!importSummary.entries || importErrors.length > 0"
+            :loading="importSubmitting"
+            @click="submitImport"
+          >
+            Import
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <VSnackbar
+      v-model="snackbar.visible"
+      :color="snackbar.color"
+      location="bottom end"
+      timeout="2500"
+    >
+      {{ snackbar.text }}
+    </VSnackbar>
   </div>
 </template>
