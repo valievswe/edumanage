@@ -29,6 +29,7 @@ const createForm = reactive({
   subjectId: null as number | null,
   quarterId: null as number | null,
   score: 0,
+  gradeId: null as number | null,
 })
 
 const bulkSelections = reactive({
@@ -163,7 +164,7 @@ const fetchBulkStudents = async () => {
   }
 
   try {
-    const { data } = await api.get<Student[]>('/api/students', {
+    const { data } = await api.get<Student[]>('/api/students/options', {
       params: {
         studyYearId: bulkSelections.studyYearId,
         gradeId: bulkSelections.gradeId || undefined,
@@ -203,6 +204,7 @@ const resetCreateForm = () => {
   createForm.subjectId = null
   createForm.quarterId = null
   createForm.score = 0
+  createForm.gradeId = null
 }
 
 const resetBulkScores = () => {
@@ -229,7 +231,7 @@ const getExistingScore = (studentId: string) => {
 }
 
 const createMark = async () => {
-  if (!createForm.studentId || !createForm.subjectId || !createForm.quarterId) return
+  if (!createForm.gradeId || !createForm.studentId || !createForm.subjectId || !createForm.quarterId) return
   createLoading.value = true
   try {
     await api.post('/api/marks', {
@@ -442,6 +444,41 @@ const submitImport = async () => {
     importSubmitting.value = false
   }
 }
+
+const createStudentOptions = ref<Student[]>([])
+const fetchCreateStudents = async () => {
+  if (!createForm.quarterId) {
+    createStudentOptions.value = []
+    return
+  }
+  if (!createForm.gradeId) {
+    createStudentOptions.value = []
+    return
+  }
+  const quarter = quarters.value.find(q => q.id === createForm.quarterId)
+  if (!quarter) {
+    createStudentOptions.value = []
+    return
+  }
+  const { data } = await api.get<Student[]>('/api/students/options', {
+    params: {
+      studyYearId: quarter.studyYearId,
+      gradeId: createForm.gradeId || undefined,
+      limit: 5000,
+    },
+  })
+  createStudentOptions.value = data
+  if (createForm.studentId && !createStudentOptions.value.some(s => s.id === createForm.studentId)) {
+    createForm.studentId = ''
+  }
+}
+
+watch(
+  () => [createForm.quarterId, createForm.gradeId],
+  () => {
+    fetchCreateStudents()
+  },
+)
 
 onMounted(async () => {
   await Promise.all([fetchMarks(), fetchOptions()])
@@ -737,11 +774,20 @@ watch(marks, () => {
         <VCardText>
           <VForm @submit.prevent="createMark">
             <VSelect
+              v-model="createForm.gradeId"
+              :items="grades"
+              item-title="name"
+              item-value="id"
+              label="Grade"
+              required
+            />
+            <VSelect
               v-model="createForm.studentId"
-              :items="students"
+              :items="createStudentOptions"
               item-title="fullName"
               item-value="id"
               label="Student"
+              class="mt-4"
               required
             />
             <VSelect

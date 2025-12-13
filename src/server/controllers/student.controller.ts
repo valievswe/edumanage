@@ -2,6 +2,39 @@ import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
 import { prisma } from "../../db/prisma";
 
+export const getStudentOptions = async (req: Request, res: Response) => {
+  try {
+    const { search, studyYearId, gradeId, limit } = req.query;
+    const where: Prisma.StudentWhereInput = {};
+
+    if (studyYearId) where.studyYearId = Number(studyYearId);
+    if (gradeId) where.gradeId = Number(gradeId);
+    if (search && typeof search === "string") {
+      where.OR = [
+        { fullName: { contains: search, mode: "insensitive" } },
+        { id: { contains: search, mode: "insensitive" } },
+      ];
+    }
+
+    const take = limit ? Number(limit) : 2000;
+    const students = await prisma.student.findMany({
+      where,
+      select: {
+        id: true,
+        fullName: true,
+        studyYearId: true,
+        grade: { select: { id: true, name: true } },
+      },
+      orderBy: { fullName: "asc" },
+      take: Number.isFinite(take) ? take : 2000,
+    });
+
+    res.json(students);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch student options", error: err });
+  }
+};
+
 export const getStudents = async (req: Request, res: Response) => {
   try {
     const { search, studyYearId, gradeId } = req.query;
@@ -18,7 +51,7 @@ export const getStudents = async (req: Request, res: Response) => {
 
     const students = await prisma.student.findMany({
       where,
-      include: { marks: true, monitorings: true, grade: true },
+      include: { grade: true },
       orderBy: { fullName: "asc" },
     });
     res.json(students);

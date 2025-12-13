@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import api from '@/utils/api'
 import type { Grade, Monitoring, Student, Subject, StudyYear } from '@/utils/types'
 import { readFirstSheetAsTable } from '@/utils/xlsxTable'
 
 const monitoring = ref<Monitoring[]>([])
-const students = ref<Student[]>([])
 const subjects = ref<Subject[]>([])
 const years = ref<StudyYear[]>([])
 const grades = ref<Grade[]>([])
@@ -40,12 +39,39 @@ const editDialog = ref(false)
 const editLoading = ref(false)
 const editingEntry = ref<Monitoring | null>(null)
 
+const monthOptionsForYear = (year: StudyYear | undefined | null, current?: string) => {
+  if (!year) return [] as Array<{ title: string; value: string }>
+  const start = new Date(year.startDate)
+  const end = new Date(year.endDate)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return []
+
+  const options: Array<{ title: string; value: string }> = []
+  const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1))
+  const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1))
+
+  while (cursor.getTime() <= last.getTime()) {
+    const y = cursor.getUTCFullYear()
+    const m = String(cursor.getUTCMonth() + 1).padStart(2, '0')
+    const value = `${y}-${m}`
+    options.push({ title: value, value })
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1)
+  }
+
+  if (current && !options.some(o => o.value === current))
+    options.unshift({ title: current, value: current })
+
+  return options
+}
+
+const getYearById = (id: number | null) => years.value.find(y => y.id === id) ?? null
+
 const createForm = reactive({
   studentId: '',
   subjectId: null as number | null,
   studyYearId: null as number | null,
   month: '',
   score: 0,
+  gradeId: null as number | null,
 })
 
 const editForm = reactive({
@@ -71,6 +97,113 @@ const headers = [
   { title: 'Study year', key: 'year' },
   { title: 'Actions', key: 'actions', sortable: false },
 ]
+
+// Quick entry (month+subject for a whole grade)
+const quickSelections = reactive({
+  studyYearId: null as number | null,
+  gradeId: null as number | null,
+  subjectId: null as number | null,
+  month: '',
+})
+const quickScores = reactive<Record<string, number | null>>({})
+const quickStudents = ref<Student[]>([])
+const quickSubmitting = ref(false)
+const quickExisting = ref<Monitoring[]>([])
+
+const resetQuickScores = () => {
+  Object.keys(quickScores).forEach(key => delete quickScores[key])
+}
+
+const quickReady = () =>
+  Boolean(quickSelections.studyYearId && quickSelections.gradeId && quickSelections.subjectId && quickSelections.month)
+
+const fetchQuickStudents = async () => {
+  if (!quickSelections.studyYearId || !quickSelections.gradeId) {
+    quickStudents.value = []
+    resetQuickScores()
+    return
+  }
+
+  const { data } = await api.get<Student[]>('/api/students/options', {
+    params: {
+      studyYearId: quickSelections.studyYearId,
+      gradeId: quickSelections.gradeId,
+      limit: 5000,
+    },
+  })
+  quickStudents.value = data
+}
+
+const fetchQuickExisting = async () => {
+  if (!quickReady()) {
+    quickExisting.value = []
+    return
+  }
+
+  const { data } = await api.get<Monitoring[]>('/api/monitoring', {
+    params: {
+      studyYearId: quickSelections.studyYearId,
+      gradeId: quickSelections.gradeId,
+      month: quickSelections.month,
+    },
+  })
+  quickExisting.value = data.filter(e => e.subject.id === quickSelections.subjectId)
+}
+
+const prefillQuickScores = () => {
+  resetQuickScores()
+  if (!quickReady()) return
+  const map = new Map<string, number>()
+  quickExisting.value.forEach(entry => {
+    map.set(entry.student.id, entry.score)
+  })
+  quickStudents.value.forEach(student => {
+    quickScores[student.id] = map.get(student.id) ?? null
+  })
+}
+
+const getQuickExistingScore = (studentId: string) => {
+  const found = quickExisting.value.find(e => e.student.id === studentId)
+  return found?.score ?? null
+}
+
+const saveQuickMonitoring = async () => {
+  if (!quickReady()) return
+  const entries = quickStudents.value
+    .map(student => {
+      const value = quickScores[student.id]
+      if (value === null || value === undefined || value === '') return null
+      return {
+        studentId: student.id,
+        subjectId: quickSelections.subjectId!,
+        studyYearId: quickSelections.studyYearId!,
+        month: quickSelections.month,
+        score: Number(value),
+      }
+    })
+    .filter(Boolean) as Array<{
+      studentId: string
+      subjectId: number
+      studyYearId: number
+      month: string
+      score: number
+    }>
+
+  if (!entries.length) return
+  quickSubmitting.value = true
+  try {
+    await api.post('/api/monitoring/bulk', { entries })
+    await fetchMonitoring()
+    await fetchQuickExisting()
+    prefillQuickScores()
+    showSnackbar('Monitoring scores saved')
+  } catch (err: any) {
+    errorMessage.value = err?.response?.data?.message || 'Failed to save monitoring scores.'
+    showSnackbar('Failed to save monitoring scores', 'error')
+  } finally {
+    quickSubmitting.value = false
+  }
+}
 
 const fetchMonitoring = async () => {
   loading.value = true
@@ -110,19 +243,11 @@ const fetchOptions = async () => {
   if (!loading.value) errorMessage.value = ''
   const errors: string[] = []
   try {
-    const [studentsRes, subjectsRes, yearsRes, gradesRes] = await Promise.allSettled([
-      api.get<Student[]>('/api/students'),
+    const [subjectsRes, yearsRes, gradesRes] = await Promise.allSettled([
       api.get<Subject[]>('/api/subjects'),
       api.get<StudyYear[]>('/api/years'),
       api.get<Grade[]>('/api/grades'),
     ])
-
-    if (studentsRes.status === 'fulfilled') {
-      students.value = studentsRes.value.data
-    } else {
-      console.error('Failed to load students', studentsRes.reason)
-      errors.push('students')
-    }
 
     if (subjectsRes.status === 'fulfilled') {
       subjects.value = subjectsRes.value.data
@@ -302,6 +427,7 @@ const resetForm = () => {
   createForm.studyYearId = null
   createForm.month = ''
   createForm.score = 0
+  createForm.gradeId = null
 }
 
 const openEditDialog = (entry: Monitoring) => {
@@ -313,8 +439,30 @@ const openEditDialog = (entry: Monitoring) => {
   editDialog.value = true
 }
 
+const createStudentOptions = ref<Student[]>([])
+const fetchCreateStudents = async () => {
+  if (!createForm.studyYearId || !createForm.gradeId) {
+    createStudentOptions.value = []
+    return
+  }
+  const { data } = await api.get<Student[]>('/api/students/options', {
+    params: {
+      studyYearId: createForm.studyYearId,
+      gradeId: createForm.gradeId,
+      limit: 5000,
+    },
+  })
+  createStudentOptions.value = data
+}
+
 const createMonitoringEntry = async () => {
-  if (!createForm.studentId || !createForm.subjectId || !createForm.studyYearId || !createForm.month) return
+  if (
+    !createForm.gradeId ||
+    !createForm.studentId ||
+    !createForm.subjectId ||
+    !createForm.studyYearId ||
+    !createForm.month
+  ) return
   createLoading.value = true
   try {
     await api.post('/api/monitoring', {
@@ -338,6 +486,7 @@ const createMonitoringEntry = async () => {
 
 const updateMonitoringEntry = async () => {
   if (!editingEntry.value) return
+  if (!editForm.month) return
   editLoading.value = true
   try {
     await api.put(`/api/monitoring/${editingEntry.value.id}`, {
@@ -376,6 +525,41 @@ const deleteMonitoringEntry = async (entry: Monitoring) => {
 onMounted(async () => {
   await Promise.all([fetchMonitoring(), fetchOptions()])
 })
+
+// keep month selection consistent with study year date range
+watch(
+  () => createForm.studyYearId,
+  () => {
+    createForm.month = ''
+    createForm.studentId = ''
+    fetchCreateStudents()
+  },
+)
+
+watch(
+  () => createForm.gradeId,
+  () => {
+    createForm.studentId = ''
+    fetchCreateStudents()
+  },
+)
+
+watch(
+  () => [quickSelections.studyYearId, quickSelections.gradeId],
+  async () => {
+    await fetchQuickStudents()
+    await fetchQuickExisting()
+    prefillQuickScores()
+  },
+)
+
+watch(
+  () => [quickSelections.subjectId, quickSelections.month],
+  async () => {
+    await fetchQuickExisting()
+    prefillQuickScores()
+  },
+)
 </script>
 
 <template>
@@ -472,6 +656,102 @@ onMounted(async () => {
       </VCardText>
     </VCard>
 
+    <VCard class="mb-6">
+      <VCardTitle>Quick entry</VCardTitle>
+      <VCardSubtitle>
+        Select study year, grade, month, and subject to update monitoring scores for every student.
+      </VCardSubtitle>
+      <VCardText>
+        <VRow class="mb-4">
+          <VCol cols="12" md="3">
+            <VSelect
+              v-model="quickSelections.studyYearId"
+              :items="years"
+              item-title="name"
+              item-value="id"
+              label="Study year"
+              :loading="optionsLoading"
+              @update:model-value="() => { quickSelections.month = '' }"
+            />
+          </VCol>
+          <VCol cols="12" md="3">
+            <VSelect
+              v-model="quickSelections.gradeId"
+              :items="grades"
+              item-title="name"
+              item-value="id"
+              label="Grade"
+            />
+          </VCol>
+          <VCol cols="12" md="3">
+            <VSelect
+              v-model="quickSelections.month"
+              :items="monthOptionsForYear(getYearById(quickSelections.studyYearId), quickSelections.month)"
+              item-title="title"
+              item-value="value"
+              label="Month"
+              :disabled="!quickSelections.studyYearId"
+            />
+          </VCol>
+          <VCol cols="12" md="3">
+            <VSelect
+              v-model="quickSelections.subjectId"
+              :items="subjects"
+              item-title="name"
+              item-value="id"
+              label="Subject"
+              :loading="optionsLoading"
+            />
+          </VCol>
+        </VRow>
+
+        <VTable
+          v-if="quickReady() && quickStudents.length"
+          class="bulk-table"
+        >
+          <thead>
+            <tr>
+              <th>Student</th>
+              <th>Grade</th>
+              <th style="width: 160px;">Score</th>
+              <th style="width: 120px;">Existing</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="student in quickStudents" :key="student.id">
+              <td>{{ student.fullName }}</td>
+              <td>{{ student.grade?.name || '—' }}</td>
+              <td>
+                <VTextField
+                  v-model.number="quickScores[student.id]"
+                  type="number"
+                  density="compact"
+                  hide-details
+                  min="0"
+                  max="100"
+                />
+              </td>
+              <td>{{ getQuickExistingScore(student.id) ?? '—' }}</td>
+            </tr>
+          </tbody>
+        </VTable>
+        <p v-else class="text-medium-emphasis mb-0">
+          Select all fields to begin entering monitoring scores.
+        </p>
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn
+          color="primary"
+          :disabled="!quickReady()"
+          :loading="quickSubmitting"
+          @click="saveQuickMonitoring"
+        >
+          Save scores
+        </VBtn>
+      </VCardActions>
+    </VCard>
+
     <VDataTable
       :headers="headers"
       :items="monitoring"
@@ -518,11 +798,29 @@ onMounted(async () => {
         <VCardText>
           <VForm @submit.prevent="createMonitoringEntry">
             <VSelect
+              v-model="createForm.studyYearId"
+              :items="years"
+              item-title="name"
+              item-value="id"
+              label="Study year"
+              required
+            />
+            <VSelect
+              v-model="createForm.gradeId"
+              :items="grades"
+              item-title="name"
+              item-value="id"
+              label="Grade"
+              class="mt-4"
+              required
+            />
+            <VSelect
               v-model="createForm.studentId"
-              :items="students"
+              :items="createStudentOptions"
               item-title="fullName"
               item-value="id"
               label="Student"
+              class="mt-4"
               required
             />
             <VSelect
@@ -535,19 +833,13 @@ onMounted(async () => {
               required
             />
             <VSelect
-              v-model="createForm.studyYearId"
-              :items="years"
-              item-title="name"
-              item-value="id"
-              label="Study year"
-              class="mt-4"
-              required
-            />
-            <VTextField
               v-model="createForm.month"
-              type="month"
+              :items="monthOptionsForYear(getYearById(createForm.studyYearId), createForm.month)"
+              item-title="title"
+              item-value="value"
               label="Month"
               class="mt-4"
+              :disabled="!createForm.studyYearId"
               required
             />
             <VTextField
@@ -604,9 +896,11 @@ onMounted(async () => {
               label="Study year"
               class="mt-4"
             />
-            <VTextField
+            <VSelect
               v-model="editForm.month"
-              type="month"
+              :items="monthOptionsForYear(getYearById(editForm.studyYearId), editForm.month)"
+              item-title="title"
+              item-value="value"
               label="Month"
               class="mt-4"
               required

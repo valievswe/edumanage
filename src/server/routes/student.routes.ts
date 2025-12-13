@@ -2,6 +2,7 @@ import { Router } from "express";
 import { verifyAdmin } from "../middleware/auth.middleare";
 import {
   getStudents,
+  getStudentOptions,
   getStudentById,
   createStudent,
   updateStudent,
@@ -10,6 +11,20 @@ import {
 } from "../controllers/student.controller";
 
 const router = Router();
+
+// ---- ADMIN (LIGHTWEIGHT OPTIONS) ----
+/**
+ * GET /api/students/options
+ * @summary Lightweight student list for dropdowns (admin)
+ * @tags Students
+ * @param {string} Authorization.header.required - Bearer access token
+ * @param {string} search.query - Partial name or ID
+ * @param {number} studyYearId.query - Study year filter
+ * @param {number} gradeId.query - Grade filter
+ * @param {number} limit.query - Max results (default 2000)
+ * @return {array<object>} 200 - Student options
+ */
+router.get("/options", verifyAdmin, getStudentOptions);
 
 /**
  * Student payload
