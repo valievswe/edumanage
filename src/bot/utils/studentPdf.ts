@@ -6,7 +6,7 @@ const formatTitle = (info: StudentInfo) =>
 
 const safe = (value: string) => value.replace(/\s+/g, " ").trim();
 
-const writeKeyValue = (doc: PDFKit.PDFDocument, key: string, value: string) => {
+const writeKeyValue = (doc: PDFDocument, key: string, value: string) => {
   doc.font("Helvetica-Bold").text(`${key}: `, { continued: true });
   doc.font("Helvetica").text(value);
 };
@@ -75,4 +75,3 @@ export const buildStudentPdf = (info: StudentInfo): Promise<Buffer> =>
 
     doc.end();
   });
-
