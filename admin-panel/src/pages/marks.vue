@@ -82,6 +82,39 @@ const bulkReady = computed(
   () => Boolean(bulkSelections.subjectIds.length && bulkSelections.quarterId && filteredStudents.value.length),
 )
 
+const scoreEntered = (value: unknown) => value !== null && value !== undefined && value !== ''
+const scoreInvalid = (value: unknown) => {
+  if (!scoreEntered(value)) return false
+  const num = Number(value)
+  if (!Number.isFinite(num)) return true
+  return num < 0 || num > 100
+}
+
+const bulkEntryCount = computed(() => {
+  let count = 0
+  filteredStudents.value.forEach(student => {
+    bulkSelections.subjectIds.forEach(subjectId => {
+      if (scoreEntered(bulkScores[student.id]?.[subjectId])) count += 1
+    })
+  })
+  return count
+})
+
+const bulkValidationErrors = computed(() => {
+  const errors: string[] = []
+  filteredStudents.value.forEach((student, rowIdx) => {
+    bulkSelections.subjectIds.forEach(subjectId => {
+      const value = bulkScores[student.id]?.[subjectId]
+      if (scoreInvalid(value)) {
+        const subjectName = subjectMap.value.get(subjectId)?.name || 'Subject'
+        errors.push(`Row ${rowIdx + 1} (${student.fullName}) • ${subjectName}: score must be 0-100`)
+      }
+    })
+  })
+  return errors
+})
+const bulkHasErrors = computed(() => bulkValidationErrors.value.length > 0)
+
 const headers = [
   { title: 'Student', key: 'student' },
   { title: 'Grade', key: 'grade' },
@@ -330,6 +363,10 @@ const createMark = async () => {
 
 const saveBulkMarks = async () => {
   if (!bulkReady.value || !bulkSelections.quarterId) return
+  if (bulkHasErrors.value) {
+    errorMessage.value = 'Fix validation errors before saving.'
+    return
+  }
 
   const entries: Array<{
     studentId: string
@@ -351,7 +388,10 @@ const saveBulkMarks = async () => {
     })
   })
 
-  if (!entries.length) return
+  if (!entries.length) {
+    errorMessage.value = 'Nothing to save. Enter at least one score.'
+    return
+  }
 
   bulkSubmitting.value = true
   bulkPasteErrors.value = []
@@ -764,6 +804,8 @@ watch(students, () => {
                     hide-details
                     min="0"
                     max="100"
+                    :error="scoreInvalid(bulkScores[student.id]?.[subjectId])"
+                    :error-messages="scoreInvalid(bulkScores[student.id]?.[subjectId]) ? '0-100 only' : undefined"
                   />
                   <div class="text-caption text-medium-emphasis">
                     Existing: {{ getExistingScore(student.id, subjectId) ?? '—' }}
@@ -798,12 +840,36 @@ watch(students, () => {
             {{ err }}
           </div>
         </VAlert>
+        <VAlert
+          v-else-if="bulkHasErrors"
+          type="error"
+          variant="tonal"
+          class="mt-3"
+        >
+          <div class="text-body-2 font-weight-medium mb-1">
+            Fix these before saving:
+          </div>
+          <div
+            v-for="err in bulkValidationErrors.slice(0, 8)"
+            :key="err"
+          >
+            {{ err }}
+          </div>
+        </VAlert>
+        <VAlert
+          v-else-if="bulkEntryCount"
+          type="info"
+          variant="tonal"
+          class="mt-3"
+        >
+          Ready to save {{ bulkEntryCount }} scores.
+        </VAlert>
       </VCardText>
       <VCardActions>
         <VSpacer />
         <VBtn
           color="primary"
-          :disabled="!bulkReady"
+          :disabled="!bulkReady || bulkHasErrors || !bulkEntryCount"
           :loading="bulkSubmitting"
           @click="saveBulkMarks"
         >

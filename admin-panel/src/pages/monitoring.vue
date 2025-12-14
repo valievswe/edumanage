@@ -125,6 +125,39 @@ const quickReady = () =>
     quickSelections.month,
   )
 
+const scoreEntered = (value: unknown) => value !== null && value !== undefined && value !== ''
+const scoreInvalid = (value: unknown) => {
+  if (!scoreEntered(value)) return false
+  const num = Number(value)
+  if (!Number.isFinite(num)) return true
+  return num < 0 || num > 100
+}
+
+const quickEntryCount = computed(() => {
+  let count = 0
+  quickStudents.value.forEach(student => {
+    quickSelections.subjectIds.forEach(subjectId => {
+      if (scoreEntered(quickScores[student.id]?.[subjectId])) count += 1
+    })
+  })
+  return count
+})
+
+const quickValidationErrors = computed(() => {
+  const errors: string[] = []
+  quickStudents.value.forEach((student, rowIdx) => {
+    quickSelections.subjectIds.forEach(subjectId => {
+      const value = quickScores[student.id]?.[subjectId]
+      if (scoreInvalid(value)) {
+        const subjectName = subjectMap.value.get(subjectId)?.name || 'Subject'
+        errors.push(`Row ${rowIdx + 1} (${student.fullName}) • ${subjectName}: score must be 0-100`)
+      }
+    })
+  })
+  return errors
+})
+const quickHasErrors = computed(() => quickValidationErrors.value.length > 0)
+
 const fetchQuickStudents = async () => {
   if (!quickSelections.studyYearId || !quickSelections.gradeId) {
     quickStudents.value = []
@@ -235,6 +268,10 @@ const onQuickPaste = (event: ClipboardEvent) => {
 
 const saveQuickMonitoring = async () => {
   if (!quickReady()) return
+  if (quickHasErrors.value) {
+    errorMessage.value = 'Fix validation errors before saving.'
+    return
+  }
   const entries: Array<{
     studentId: string
     subjectId: number
@@ -823,6 +860,8 @@ watch(quickStudents, () => {
                   hide-details
                   min="0"
                   max="100"
+                  :error="scoreInvalid(quickScores[student.id]?.[subjectId])"
+                  :error-messages="scoreInvalid(quickScores[student.id]?.[subjectId]) ? '0-100 only' : undefined"
                 />
                 <div class="text-caption text-medium-emphasis">
                   Existing: {{ getQuickExistingScore(student.id, subjectId) ?? '—' }}
@@ -835,7 +874,23 @@ watch(quickStudents, () => {
           Select all fields to begin entering monitoring scores.
         </p>
         <VAlert
-          v-if="quickPasteErrors.length"
+          v-if="quickHasErrors"
+          type="error"
+          variant="tonal"
+          class="mt-3"
+        >
+          <div class="text-body-2 font-weight-medium mb-1">
+            Fix these before saving:
+          </div>
+          <div
+            v-for="err in quickValidationErrors.slice(0, 8)"
+            :key="err"
+          >
+            {{ err }}
+          </div>
+        </VAlert>
+        <VAlert
+          v-else-if="quickPasteErrors.length"
           type="warning"
           variant="tonal"
           class="mt-3"
@@ -850,12 +905,20 @@ watch(quickStudents, () => {
             {{ err }}
           </div>
         </VAlert>
+        <VAlert
+          v-else-if="quickEntryCount"
+          type="info"
+          variant="tonal"
+          class="mt-3"
+        >
+          Ready to save {{ quickEntryCount }} scores.
+        </VAlert>
       </VCardText>
       <VCardActions>
         <VSpacer />
         <VBtn
           color="primary"
-          :disabled="!quickReady()"
+          :disabled="!quickReady() || quickHasErrors || !quickEntryCount"
           :loading="quickSubmitting"
           @click="saveQuickMonitoring"
         >
