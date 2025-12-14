@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import api from '@/utils/api'
-import { readFirstSheetAsTable } from '@/utils/xlsxTable'
+import { parseClipboardTable, readFirstSheetAsTable } from '@/utils/xlsxTable'
 import type {
   Grade,
   Student,
@@ -61,6 +61,7 @@ const importForm = reactive({
   updateExisting: false,
 })
 const importSubmitting = ref(false)
+const importPasting = ref(false)
 
 const headers = [
   { title: 'ID', key: 'id' },
@@ -148,8 +149,12 @@ const onImportFileSelected = async (event: Event) => {
     return
   }
 
-  const gradeByName = new Map(grades.value.map(grade => [normalizeKey(grade.name), grade.id]))
   const table = await readFirstSheetAsTable(file)
+  await processImportTable(table)
+}
+
+async function processImportTable(table: Awaited<ReturnType<typeof readFirstSheetAsTable>>) {
+  const gradeByName = new Map(grades.value.map(grade => [normalizeKey(grade.name), grade.id]))
   const idHeader =
     table.headers.find(header =>
       ['studentid', 'student_id', 'id', 'code'].includes(normalizeKey(header)),
@@ -211,6 +216,32 @@ const onImportFileSelected = async (event: Event) => {
   importSummary.invalid = invalid
   importSummary.duplicatesMerged = duplicatesMerged
   importErrors.value = errors.slice(0, 50)
+}
+
+const pasteImportFromClipboard = async () => {
+  resetImport()
+  importFileName.value = 'Clipboard'
+  if (!importForm.studyYearId) {
+    importErrors.value = ['Select a study year before importing.']
+    return
+  }
+  try {
+    importPasting.value = true
+    const text = await navigator.clipboard.readText()
+    if (!text.trim()) {
+      importErrors.value = ['Clipboard is empty. Copy rows from your sheet first.']
+      return
+    }
+    const table = parseClipboardTable(text)
+    await processImportTable(table)
+    if (!importEntries.value.length)
+      importErrors.value = ['No valid rows found in clipboard data.']
+  } catch (err) {
+    console.error('Clipboard paste failed', err)
+    importErrors.value = ['Unable to read clipboard. Paste permissions are required.']
+  } finally {
+    importPasting.value = false
+  }
 }
 
 const submitImport = async () => {
@@ -508,23 +539,40 @@ onMounted(async () => {
                 inset
               />
             </VCol>
-            <VCol
-              cols="12"
-              md="6"
-              class="d-flex align-center"
+          <VCol
+            cols="12"
+            md="6"
+            class="d-flex align-center"
+          >
+            <VBtn
+              variant="tonal"
+              color="primary"
+              @click="onPickImportFile"
             >
-              <VBtn
-                variant="tonal"
-                color="primary"
-                @click="onPickImportFile"
-              >
                 Choose file
-              </VBtn>
-              <span class="ms-3 text-body-2 text-medium-emphasis">
-                {{ importFileName || 'No file selected' }}
-              </span>
-            </VCol>
-          </VRow>
+            </VBtn>
+            <span class="ms-3 text-body-2 text-medium-emphasis">
+              {{ importFileName || 'No file selected' }}
+            </span>
+          </VCol>
+          <VCol
+            cols="12"
+            md="6"
+            class="d-flex align-center"
+          >
+            <VBtn
+              variant="outlined"
+              color="secondary"
+              :loading="importPasting"
+              @click="pasteImportFromClipboard"
+            >
+              Paste from clipboard
+            </VBtn>
+            <span class="ms-3 text-body-2 text-medium-emphasis">
+              Copy rows (with headers) from Excel/Sheets and click paste.
+            </span>
+          </VCol>
+        </VRow>
 
           <VAlert
             v-if="importErrors.length"

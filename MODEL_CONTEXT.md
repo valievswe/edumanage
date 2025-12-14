@@ -72,7 +72,7 @@ Core entities (see `prisma/schema.prisma`):
 - `Grade` (e.g. “7-A”) and `Student` (students belong to a study year; grade optional)
 - `Subject`
 - `Mark`: `(studentId, subjectId, quarterId)` is unique
-- `Monitoring`: per `(studentId, subjectId, studyYearId, month)` (not unique in schema; multiple rows possible)
+- `Monitoring`: per `(studentId, subjectId, studyYearId, month)` is **unique** (upserts are used in the API)
 
 Deletion behavior:
 
@@ -99,10 +99,13 @@ Auth header: `Authorization: Bearer <token>`
 
 ### Admin-only endpoints (JWT required)
 
+- `GET /api/students/options` (lightweight list for dropdowns)
 - `GET/POST/PUT/DELETE /api/students`
+- `POST /api/students/import` (parsed XLSX rows sent from client)
 - `GET/POST/PUT/DELETE /api/subjects`
 - `GET/POST/PUT/DELETE /api/grades`
 - `GET/POST/PUT/DELETE /api/monitoring`
+- `POST /api/monitoring/bulk` (upsert monitoring entries)
 - `GET/POST/PUT/DELETE /api/marks`
 - `POST /api/marks/bulk` (upsert based on student+subject+quarter unique constraint)
 - `GET/POST/DELETE /api/quarters`
@@ -156,5 +159,5 @@ Admin panel:
 
 - Swagger generation is configured with `filesPattern: "./routes/**/*.ts"`; if you run compiled JS from `dist/`, this may need adjustment to point at built route files.
 - The bot and server share a single process and DB; heavy bot queries can affect API latency.
-- `Monitoring` doesn’t have a uniqueness constraint, so duplicates for the same student/subject/month are possible unless enforced at the API/UI level.
-
+- Monitoring month values are normalized: `YYYY-MM` is preferred, `YYYY-MM-DD` is coerced to `YYYY-MM`, and legacy month labels are still accepted.
+- Deleting a student that has marks/monitoring requires `?force=true`; otherwise the API returns 409 with counts to avoid accidental cascades.

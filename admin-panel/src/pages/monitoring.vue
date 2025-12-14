@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import api from '@/utils/api'
 import type { Grade, Monitoring, Student, Subject, StudyYear } from '@/utils/types'
 import { readFirstSheetAsTable } from '@/utils/xlsxTable'
@@ -14,6 +14,7 @@ const optionsLoading = ref(false)
 const errorMessage = ref('')
 const snackbar = reactive({ visible: false, color: 'success', text: '' })
 const deletingId = ref<number | null>(null)
+const normalizeKey = (value: string) => value.trim().toLowerCase().replace(/[\s_]+/g, '')
 
 // XLSX import (grade-wide, multi-subject for a given month)
 const importDialog = ref(false)
@@ -102,20 +103,27 @@ const headers = [
 const quickSelections = reactive({
   studyYearId: null as number | null,
   gradeId: null as number | null,
-  subjectId: null as number | null,
+  subjectIds: [] as number[],
   month: '',
 })
-const quickScores = reactive<Record<string, number | null>>({})
+const quickScores = reactive<Record<string, Record<number, number | null>>>({})
 const quickStudents = ref<Student[]>([])
 const quickSubmitting = ref(false)
 const quickExisting = ref<Monitoring[]>([])
+const quickPasteErrors = ref<string[]>([])
+const subjectMap = computed(() => new Map(subjects.value.map(s => [s.id, s])))
 
 const resetQuickScores = () => {
   Object.keys(quickScores).forEach(key => delete quickScores[key])
 }
 
 const quickReady = () =>
-  Boolean(quickSelections.studyYearId && quickSelections.gradeId && quickSelections.subjectId && quickSelections.month)
+  Boolean(
+    quickSelections.studyYearId &&
+    quickSelections.gradeId &&
+    quickSelections.subjectIds.length &&
+    quickSelections.month,
+  )
 
 const fetchQuickStudents = async () => {
   if (!quickSelections.studyYearId || !quickSelections.gradeId) {
@@ -147,56 +155,127 @@ const fetchQuickExisting = async () => {
       month: quickSelections.month,
     },
   })
-  quickExisting.value = data.filter(e => e.subject.id === quickSelections.subjectId)
+  const selected = new Set(quickSelections.subjectIds)
+  quickExisting.value = data.filter(e => selected.has(e.subject.id))
 }
 
 const prefillQuickScores = () => {
   resetQuickScores()
   if (!quickReady()) return
-  const map = new Map<string, number>()
+  const existingMap = new Map<string, Map<number, number>>()
   quickExisting.value.forEach(entry => {
-    map.set(entry.student.id, entry.score)
+    if (!existingMap.has(entry.student.id)) existingMap.set(entry.student.id, new Map())
+    existingMap.get(entry.student.id)?.set(entry.subject.id, entry.score)
   })
   quickStudents.value.forEach(student => {
-    quickScores[student.id] = map.get(student.id) ?? null
+    if (!quickScores[student.id]) quickScores[student.id] = {}
+    quickSelections.subjectIds.forEach(subjectId => {
+      const existing = existingMap.get(student.id)?.get(subjectId)
+      quickScores[student.id][subjectId] = existing ?? null
+    })
   })
 }
 
-const getQuickExistingScore = (studentId: string) => {
-  const found = quickExisting.value.find(e => e.student.id === studentId)
+const getQuickExistingScore = (studentId: string, subjectId: number) => {
+  const found = quickExisting.value.find(e => e.student.id === studentId && e.subject.id === subjectId)
   return found?.score ?? null
+}
+
+const onQuickPaste = (event: ClipboardEvent) => {
+  if (!quickReady()) return
+  const text = event.clipboardData?.getData('text') || ''
+  if (!text.trim()) return
+  quickPasteErrors.value = []
+
+  const rows = text
+    .trim()
+    .split(/\r?\n/)
+    .map(line => line.split('\t'))
+    .filter(r => r.length)
+
+  if (!rows.length) return
+
+  const subjectsOrdered = quickSelections.subjectIds
+    .map(id => subjectMap.value.get(id))
+    .filter(Boolean) as Subject[]
+
+  if (!subjectsOrdered.length) return
+
+  const headerCells = rows[0].map(cell => cell.trim())
+  const headerMatches =
+    headerCells.length === subjectsOrdered.length &&
+    headerCells.every((cell, idx) => normalizeKey(cell) === normalizeKey(subjectsOrdered[idx].name))
+
+  const dataRows = headerMatches ? rows.slice(1) : rows
+  const maxRows = quickStudents.value.length
+  const errors: string[] = []
+
+  dataRows.slice(0, maxRows).forEach((cells, rowIndex) => {
+    const student = quickStudents.value[rowIndex]
+    if (!student) return
+    if (!quickScores[student.id]) quickScores[student.id] = {}
+
+    subjectsOrdered.forEach((subject, colIdx) => {
+      const raw = cells[colIdx] ?? ''
+      if (raw === '' || raw == null) {
+        quickScores[student.id][subject.id] = null
+        return
+      }
+      const parsed = Number(raw)
+      if (!Number.isFinite(parsed)) {
+        errors.push(`Row ${rowIndex + 1}: invalid number "${raw}"`)
+        return
+      }
+      quickScores[student.id][subject.id] = parsed
+    })
+  })
+
+  if (errors.length) quickPasteErrors.value = errors.slice(0, 20)
 }
 
 const saveQuickMonitoring = async () => {
   if (!quickReady()) return
-  const entries = quickStudents.value
-    .map(student => {
-      const value = quickScores[student.id]
-      if (value === null || value === undefined || value === '') return null
-      return {
+  const entries: Array<{
+    studentId: string
+    subjectId: number
+    studyYearId: number
+    month: string
+    score: number
+  }> = []
+
+  quickStudents.value.forEach(student => {
+    quickSelections.subjectIds.forEach(subjectId => {
+      const value = quickScores[student.id]?.[subjectId]
+      if (value === null || value === undefined || value === '') return
+      entries.push({
         studentId: student.id,
-        subjectId: quickSelections.subjectId!,
+        subjectId,
         studyYearId: quickSelections.studyYearId!,
         month: quickSelections.month,
         score: Number(value),
-      }
+      })
     })
-    .filter(Boolean) as Array<{
-      studentId: string
-      subjectId: number
-      studyYearId: number
-      month: string
-      score: number
-    }>
+  })
 
   if (!entries.length) return
   quickSubmitting.value = true
   try {
-    await api.post('/api/monitoring/bulk', { entries })
+    const { data } = await api.post('/api/monitoring/bulk', {
+      entries,
+      gradeId: quickSelections.gradeId,
+    })
+    const apiErrors = Array.isArray(data?.errors) ? data.errors : []
+    if (apiErrors.length) {
+      errorMessage.value = `${apiErrors.length} rows failed.`
+      quickPasteErrors.value = apiErrors.slice(0, 50).map((err: any) => err?.message || String(err))
+      showSnackbar('Saved with some errors', 'warning')
+    } else {
+      quickPasteErrors.value = []
+      showSnackbar('Monitoring scores saved')
+    }
     await fetchMonitoring()
     await fetchQuickExisting()
     prefillQuickScores()
-    showSnackbar('Monitoring scores saved')
   } catch (err: any) {
     errorMessage.value = err?.response?.data?.message || 'Failed to save monitoring scores.'
     showSnackbar('Failed to save monitoring scores', 'error')
@@ -309,7 +388,6 @@ const fetchImportStudents = async () => {
   importStudents.value = data
 }
 
-const normalizeKey = (value: string) => value.trim().toLowerCase().replace(/[\s_]+/g, '')
 const findStudentIdHeader = (headers: string[]) =>
   headers.find(h => ['studentid', 'student_id', 'id'].includes(normalizeKey(h))) ?? null
 
@@ -554,12 +632,16 @@ watch(
 )
 
 watch(
-  () => [quickSelections.subjectId, quickSelections.month],
+  () => [quickSelections.subjectIds.join(','), quickSelections.month],
   async () => {
     await fetchQuickExisting()
     prefillQuickScores()
   },
 )
+
+watch(quickStudents, () => {
+  prefillQuickScores()
+})
 </script>
 
 <template>
@@ -659,7 +741,7 @@ watch(
     <VCard class="mb-6">
       <VCardTitle>Quick entry</VCardTitle>
       <VCardSubtitle>
-        Select study year, grade, month, and subject to update monitoring scores for every student.
+        Select study year, grade, month, and one or more subjects to update monitoring scores for every student. Paste directly from Excel/Sheets.
       </VCardSubtitle>
       <VCardText>
         <VRow class="mb-4">
@@ -695,12 +777,15 @@ watch(
           </VCol>
           <VCol cols="12" md="3">
             <VSelect
-              v-model="quickSelections.subjectId"
+              v-model="quickSelections.subjectIds"
               :items="subjects"
               item-title="name"
               item-value="id"
-              label="Subject"
+              label="Subjects"
               :loading="optionsLoading"
+              multiple
+              chips
+              closable-chips
             />
           </VCol>
         </VRow>
@@ -708,36 +793,63 @@ watch(
         <VTable
           v-if="quickReady() && quickStudents.length"
           class="bulk-table"
+          @paste.prevent="onQuickPaste"
         >
           <thead>
             <tr>
               <th>Student</th>
               <th>Grade</th>
-              <th style="width: 160px;">Score</th>
-              <th style="width: 120px;">Existing</th>
+              <th
+                v-for="subjectId in quickSelections.subjectIds"
+                :key="subjectId"
+                style="min-width: 180px;"
+              >
+                {{ subjectMap.get(subjectId)?.name || 'Subject' }}
+              </th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="student in quickStudents" :key="student.id">
               <td>{{ student.fullName }}</td>
               <td>{{ student.grade?.name || '—' }}</td>
-              <td>
+              <td
+                v-for="subjectId in quickSelections.subjectIds"
+                :key="`${student.id}-${subjectId}`"
+              >
                 <VTextField
-                  v-model.number="quickScores[student.id]"
+                  v-model.number="quickScores[student.id][subjectId]"
                   type="number"
                   density="compact"
                   hide-details
                   min="0"
                   max="100"
                 />
+                <div class="text-caption text-medium-emphasis">
+                  Existing: {{ getQuickExistingScore(student.id, subjectId) ?? '—' }}
+                </div>
               </td>
-              <td>{{ getQuickExistingScore(student.id) ?? '—' }}</td>
             </tr>
           </tbody>
         </VTable>
         <p v-else class="text-medium-emphasis mb-0">
           Select all fields to begin entering monitoring scores.
         </p>
+        <VAlert
+          v-if="quickPasteErrors.length"
+          type="warning"
+          variant="tonal"
+          class="mt-3"
+        >
+          <div class="text-body-2 font-weight-medium mb-1">
+            Paste issues
+          </div>
+          <div
+            v-for="err in quickPasteErrors"
+            :key="err"
+          >
+            {{ err }}
+          </div>
+        </VAlert>
       </VCardText>
       <VCardActions>
         <VSpacer />

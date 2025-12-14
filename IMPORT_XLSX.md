@@ -18,7 +18,7 @@ The admin panel supports importing **grade-wide** quarter marks and monitoring s
 
 ### Required columns
 
-- `studentId` (required): the student identifier used in the system.
+- `studentId` (required): the student identifier used in the system. The importer accepts `studentId`, `student_id`, `id`, or `code` headers.
 
 ### Optional columns
 
@@ -50,6 +50,9 @@ In Admin → Marks → **Import XLSX**:
 This writes marks using the unique key:
 `(studentId, subjectId, quarterId)` (upsert).
 
+- Quarter must belong to the selected study year (UI enforces the choice).
+- Student IDs are validated against the selected study year/grade; unknown IDs are listed before import.
+
 ## Importing monitoring (month-by-month)
 
 In Admin → Monitoring → **Import XLSX**:
@@ -63,6 +66,9 @@ In Admin → Monitoring → **Import XLSX**:
 This writes monitoring using the unique key:
 `(studentId, subjectId, studyYearId, month)` (upsert).
 
+- Month accepts `YYYY-MM` (preferred) or `YYYY-MM-DD` (coerced to `YYYY-MM`); legacy labels are preserved as-is.
+- Student IDs are validated against the selected study year/grade; unknown IDs are listed before import.
+
 ## Importing students
 
 In Admin → Students → **Import XLSX**:
@@ -74,14 +80,14 @@ In Admin → Students → **Import XLSX**:
 
 Required columns:
 
-- `studentId` or `id`
+- `studentId`, `student_id`, `id`, or `code`
 - `fullName`
 
 Optional column:
 
-- `grade` (matched against grade names in Admin → Grades)
+- `grade` (case-insensitive match against grade names in Admin → Grades; headers `grade`, `class`, or `grade_name` are accepted)
 
-Duplicates by `studentId` are merged automatically, and rows without an ID or full name are ignored.
+Duplicates by `studentId` are merged automatically, and rows without an ID or full name are ignored. If you select a **Grade** in the dialog, it is used as the default when a row omits grade data.
 
 ## Common errors and fixes
 

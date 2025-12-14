@@ -36,12 +36,13 @@ const createForm = reactive({
 const bulkSelections = reactive({
   studyYearId: null as number | null,
   gradeId: null as number | null,
-  subjectId: null as number | null,
+  subjectIds: [] as number[],
   quarterId: null as number | null,
 })
 
-const bulkScores = reactive<Record<string, number | null>>({})
+const bulkScores = reactive<Record<string, Record<number, number | null>>>({})
 const bulkSubmitting = ref(false)
+const bulkPasteErrors = ref<string[]>([])
 
 const snackbar = reactive({ visible: false, color: 'success', text: '' })
 const showSnackbar = (text: string, color: string = 'success') => {
@@ -49,6 +50,8 @@ const showSnackbar = (text: string, color: string = 'success') => {
   snackbar.color = color
   snackbar.visible = true
 }
+
+const normalizeKey = (value: string) => value.trim().toLowerCase().replace(/[\s_]+/g, '')
 
 const filteredStudents = computed(() => students.value)
 
@@ -62,6 +65,8 @@ const importQuarterOptions = computed(() => {
   return quarters.value.filter(q => q.studyYearId === importForm.studyYearId)
 })
 
+const subjectMap = computed(() => new Map(subjects.value.map(s => [s.id, s])))
+
 const markKey = (studentId: string, subjectId: number, quarterId: number) =>
   `${studentId}-${subjectId}-${quarterId}`
 
@@ -74,7 +79,7 @@ const existingMarksMap = computed(() => {
 })
 
 const bulkReady = computed(
-  () => Boolean(bulkSelections.subjectId && bulkSelections.quarterId && filteredStudents.value.length),
+  () => Boolean(bulkSelections.subjectIds.length && bulkSelections.quarterId && filteredStudents.value.length),
 )
 
 const headers = [
@@ -229,21 +234,78 @@ const resetBulkScores = () => {
 
 const prefillBulkScores = () => {
   resetBulkScores()
-  if (!bulkReady.value || !bulkSelections.subjectId || !bulkSelections.quarterId) return
+  if (!bulkReady.value || !bulkSelections.quarterId) return
 
   filteredStudents.value.forEach(student => {
-    const key = markKey(student.id, bulkSelections.subjectId!, bulkSelections.quarterId!)
-    const existing = existingMarksMap.value.get(key)
-    bulkScores[student.id] = existing?.score ?? null
+    if (!bulkScores[student.id]) bulkScores[student.id] = {}
+    bulkSelections.subjectIds.forEach(subjectId => {
+      const key = markKey(student.id, subjectId, bulkSelections.quarterId!)
+      const existing = existingMarksMap.value.get(key)
+      bulkScores[student.id][subjectId] = existing?.score ?? null
+    })
   })
 }
 
-const getExistingScore = (studentId: string) => {
-  if (!bulkSelections.subjectId || !bulkSelections.quarterId) return null
+const getExistingScore = (studentId: string, subjectId: number) => {
+  if (!bulkSelections.quarterId) return null
   const existing = existingMarksMap.value.get(
-    markKey(studentId, bulkSelections.subjectId, bulkSelections.quarterId),
+    markKey(studentId, subjectId, bulkSelections.quarterId),
   )
   return existing?.score ?? null
+}
+
+const onBulkPaste = (event: ClipboardEvent) => {
+  if (!bulkReady.value) return
+  const text = event.clipboardData?.getData('text') || ''
+  if (!text.trim()) return
+  bulkPasteErrors.value = []
+
+  const rows = text
+    .trim()
+    .split(/\r?\n/)
+    .map(line => line.split('\t'))
+    .filter(r => r.length)
+
+  if (!rows.length) return
+
+  const subjectsOrdered = bulkSelections.subjectIds
+    .map(id => subjectMap.value.get(id))
+    .filter(Boolean) as Subject[]
+
+  if (!subjectsOrdered.length) return
+
+  const headerCells = rows[0].map(cell => cell.trim())
+  const headerMatches =
+    headerCells.length === subjectsOrdered.length &&
+    headerCells.every((cell, idx) => normalizeKey(cell) === normalizeKey(subjectsOrdered[idx].name))
+
+  const dataRows = headerMatches ? rows.slice(1) : rows
+  const maxRows = filteredStudents.value.length
+  const errors: string[] = []
+
+  dataRows.slice(0, maxRows).forEach((cells, rowIndex) => {
+    const student = filteredStudents.value[rowIndex]
+    if (!student) return
+    if (!bulkScores[student.id]) bulkScores[student.id] = {}
+
+    subjectsOrdered.forEach((subject, colIdx) => {
+      const raw = cells[colIdx] ?? ''
+      if (raw === '' || raw == null) {
+        bulkScores[student.id][subject.id] = null
+        return
+      }
+      const parsed = Number(raw)
+      if (!Number.isFinite(parsed)) {
+        errors.push(`Row ${rowIndex + 1}: invalid number "${raw}"`)
+        return
+      }
+      bulkScores[student.id][subject.id] = parsed
+    })
+  })
+
+  if (errors.length) {
+    bulkPasteErrors.value = errors.slice(0, 20)
+  }
 }
 
 const createMark = async () => {
@@ -267,35 +329,51 @@ const createMark = async () => {
 }
 
 const saveBulkMarks = async () => {
-  if (!bulkReady.value || !bulkSelections.subjectId || !bulkSelections.quarterId) return
+  if (!bulkReady.value || !bulkSelections.quarterId) return
 
-  const entries = filteredStudents.value
-    .map(student => {
-      const value = bulkScores[student.id]
-      if (value === null || value === undefined || value === '') return null
-      return {
+  const entries: Array<{
+    studentId: string
+    subjectId: number
+    quarterId: number
+    score: number
+  }> = []
+
+  filteredStudents.value.forEach(student => {
+    bulkSelections.subjectIds.forEach(subjectId => {
+      const value = bulkScores[student.id]?.[subjectId]
+      if (value === null || value === undefined || value === '') return
+      entries.push({
         studentId: student.id,
-        subjectId: bulkSelections.subjectId!,
+        subjectId,
         quarterId: bulkSelections.quarterId!,
         score: Number(value),
-      }
+      })
     })
-    .filter(Boolean) as Array<{
-      studentId: string
-      subjectId: number
-      quarterId: number
-      score: number
-    }>
+  })
 
   if (!entries.length) return
 
   bulkSubmitting.value = true
+  bulkPasteErrors.value = []
   try {
-    await api.post('/api/marks/bulk', { entries })
+    const { data } = await api.post('/api/marks/bulk', {
+      entries,
+      studyYearId: bulkSelections.studyYearId,
+      gradeId: bulkSelections.gradeId,
+    })
+    const apiErrors = Array.isArray(data?.errors) ? data.errors : []
+    if (apiErrors.length) {
+      errorMessage.value = `${apiErrors.length} rows failed.`
+      bulkPasteErrors.value = apiErrors.slice(0, 50).map((err: any) => err?.message || String(err))
+      showSnackbar('Saved with some errors', 'warning')
+    } else {
+      showSnackbar(`Saved ${data?.updated ?? entries.length} marks`)
+    }
     await fetchMarks()
     prefillBulkScores()
   } catch (err: any) {
     errorMessage.value = err?.response?.data?.message || 'Failed to save marks.'
+    showSnackbar('Failed to save marks', 'error')
   } finally {
     bulkSubmitting.value = false
   }
@@ -348,7 +426,6 @@ const fetchImportStudents = async () => {
   importStudents.value = data
 }
 
-const normalizeKey = (value: string) => value.trim().toLowerCase().replace(/[\s_]+/g, '')
 const findStudentIdHeader = (headers: string[]) =>
   headers.find(h => ['studentid', 'student_id', 'id'].includes(normalizeKey(h))) ?? null
 
@@ -511,13 +588,17 @@ watch(
 )
 
 watch(
-  () => [bulkSelections.subjectId, bulkSelections.quarterId],
+  () => [bulkSelections.subjectIds.join(','), bulkSelections.quarterId],
   () => {
     prefillBulkScores()
   },
 )
 
 watch(marks, () => {
+  prefillBulkScores()
+})
+
+watch(students, () => {
   prefillBulkScores()
 })
 </script>
@@ -572,7 +653,7 @@ watch(marks, () => {
     <VCard class="mb-6">
       <VCardTitle>Quick entry</VCardTitle>
       <VCardSubtitle>
-        Select a study year, subject, and quarter to update scores for every student in one place.
+        Select a study year, quarter, and one or more subjects to update scores for every student. Paste directly from Excel/Sheets.
       </VCardSubtitle>
       <VCardText>
         <VRow class="mb-4">
@@ -607,11 +688,14 @@ watch(marks, () => {
             md="3"
           >
             <VSelect
-              v-model="bulkSelections.subjectId"
+              v-model="bulkSelections.subjectIds"
               :items="subjects"
               item-title="name"
               item-value="id"
-              label="Subject"
+              label="Subjects"
+              multiple
+              chips
+              closable-chips
               :loading="optionsLoading"
             />
           </VCol>
@@ -641,7 +725,10 @@ watch(marks, () => {
           </VCol>
         </VRow>
 
-        <div v-if="bulkSelections.subjectId && bulkSelections.quarterId">
+        <div
+          v-if="bulkSelections.subjectIds.length && bulkSelections.quarterId"
+          @paste.prevent="onBulkPaste"
+        >
           <VTable
             v-if="filteredStudents.length"
             class="bulk-table"
@@ -650,11 +737,12 @@ watch(marks, () => {
               <tr>
                 <th>Student</th>
                 <th>Grade</th>
-                <th style="width: 160px;">
-                  Score
-                </th>
-                <th style="width: 120px;">
-                  Existing
+                <th
+                  v-for="subjectId in bulkSelections.subjectIds"
+                  :key="subjectId"
+                  style="min-width: 180px;"
+                >
+                  {{ subjectMap.get(subjectId)?.name || 'Subject' }}
                 </th>
               </tr>
             </thead>
@@ -665,18 +753,21 @@ watch(marks, () => {
               >
                 <td>{{ student.fullName }}</td>
                 <td>{{ student.grade?.name || '—' }}</td>
-                <td>
+                <td
+                  v-for="subjectId in bulkSelections.subjectIds"
+                  :key="`${student.id}-${subjectId}`"
+                >
                   <VTextField
-                    v-model.number="bulkScores[student.id]"
+                    v-model.number="bulkScores[student.id][subjectId]"
                     type="number"
                     density="compact"
                     hide-details
                     min="0"
                     max="100"
                   />
-                </td>
-                <td>
-                  {{ getExistingScore(student.id) ?? '—' }}
+                  <div class="text-caption text-medium-emphasis">
+                    Existing: {{ getExistingScore(student.id, subjectId) ?? '—' }}
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -689,8 +780,24 @@ watch(marks, () => {
           </p>
         </div>
         <div v-else class="text-medium-emphasis">
-          Select a subject and quarter to begin entering scores.
+          Select subjects and a quarter to begin entering scores.
         </div>
+        <VAlert
+          v-if="bulkPasteErrors.length"
+          type="warning"
+          variant="tonal"
+          class="mt-3"
+        >
+          <div class="text-body-2 font-weight-medium mb-1">
+            Paste issues
+          </div>
+          <div
+            v-for="err in bulkPasteErrors"
+            :key="err"
+          >
+            {{ err }}
+          </div>
+        </VAlert>
       </VCardText>
       <VCardActions>
         <VSpacer />

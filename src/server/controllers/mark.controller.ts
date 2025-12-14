@@ -130,39 +130,171 @@ export const deleteMark = async (req: Request, res: Response) => {
 };
 
 export const upsertBulkMarks = async (req: Request, res: Response) => {
-  const { entries } = req.body as {
-    entries: Array<{
-      studentId: string;
-      subjectId: number;
-      quarterId: number;
-      score: number;
-    }>;
-  };
+  const entriesInput = Array.isArray((req.body as any)?.entries)
+    ? (req.body as any).entries
+    : [];
+  const studyYearIdRaw = (req.body as any)?.studyYearId;
+  const gradeIdRaw = (req.body as any)?.gradeId;
+  const studyYearId =
+    studyYearIdRaw == null || studyYearIdRaw === ""
+      ? null
+      : Number(studyYearIdRaw);
+  const gradeId =
+    gradeIdRaw == null || gradeIdRaw === "" ? null : Number(gradeIdRaw);
 
-  if (!Array.isArray(entries) || !entries.length) {
+  if (!entriesInput.length) {
     return res.status(400).json({ message: "Entries array is required" });
   }
 
+  if (studyYearId != null && !Number.isFinite(studyYearId)) {
+    return res.status(400).json({ message: "studyYearId must be a number" });
+  }
+  if (gradeId != null && !Number.isFinite(gradeId)) {
+    return res.status(400).json({ message: "gradeId must be a number" });
+  }
+
+  const errors: Array<{ message: string }> = [];
+  const normalized = entriesInput.map((entry, idx) => ({
+    row: idx + 1,
+    studentId:
+      typeof entry?.studentId === "string"
+        ? entry.studentId.trim()
+        : String(entry?.studentId ?? "").trim(),
+    subjectId: Number(entry?.subjectId),
+    quarterId: Number(entry?.quarterId),
+    score: Number(entry?.score),
+  }));
+
+  const studentIds = Array.from(
+    new Set(normalized.map((e) => e.studentId).filter(Boolean))
+  );
+  const subjectIds = Array.from(
+    new Set(
+      normalized
+        .map((e) => e.subjectId)
+        .filter((id) => Number.isFinite(id))
+        .map(Number)
+    )
+  );
+  const quarterIds = Array.from(
+    new Set(
+      normalized
+        .map((e) => e.quarterId)
+        .filter((id) => Number.isFinite(id))
+        .map(Number)
+    )
+  );
+
   try {
-    const results = await Promise.all(
-      entries.map(async ({ studentId, subjectId, quarterId, score }) => {
-        if (!studentId || !subjectId || !quarterId || typeof score !== "number")
-          return null;
+    const [students, subjects, quarters] = await Promise.all([
+      prisma.student.findMany({
+        where: { id: { in: studentIds } },
+        select: { id: true, gradeId: true, studyYearId: true },
+      }),
+      prisma.subject.findMany({
+        where: { id: { in: subjectIds } },
+        select: { id: true },
+      }),
+      prisma.quarter.findMany({
+        where: { id: { in: quarterIds } },
+        select: { id: true, studyYearId: true },
+      }),
+    ]);
 
-        const whereUnique: MarkWhereUniqueInput = {
-          student_subject_quarter_unique: { studentId, subjectId, quarterId },
-        };
-
-        return prisma.mark.upsert({
-          where: whereUnique,
-          update: { score },
-          create: { studentId, subjectId, quarterId, score },
-        });
-      })
+    const studentMap = new Map(
+      students.map((s) => [s.id, { gradeId: s.gradeId, studyYearId: s.studyYearId }])
     );
+    const subjectSet = new Set(subjects.map((s) => s.id));
+    const quarterMap = new Map(quarters.map((q) => [q.id, q.studyYearId]));
 
-    const filtered = results.filter(Boolean);
-    res.json({ updated: filtered.length, entries: filtered });
+    const ops: any[] = [];
+
+    for (const entry of normalized) {
+      if (!entry.studentId) {
+        errors.push({ message: `Row ${entry.row}: studentId is required` });
+        continue;
+      }
+      if (!Number.isFinite(entry.subjectId) || !Number.isFinite(entry.quarterId)) {
+        errors.push({
+          message: `Row ${entry.row}: subjectId and quarterId are required numbers`,
+        });
+        continue;
+      }
+      if (!Number.isFinite(entry.score)) {
+        errors.push({ message: `Row ${entry.row}: score must be a number` });
+        continue;
+      }
+
+      const student = studentMap.get(entry.studentId);
+      if (!student) {
+        errors.push({
+          message: `Row ${entry.row}: student "${entry.studentId}" not found`,
+        });
+        continue;
+      }
+      if (gradeId != null && student.gradeId !== gradeId) {
+        errors.push({
+          message: `Row ${entry.row}: student "${entry.studentId}" not in selected grade`,
+        });
+        continue;
+      }
+      const quarterStudyYear = quarterMap.get(entry.quarterId);
+      if (!quarterStudyYear) {
+        errors.push({
+          message: `Row ${entry.row}: quarter ${entry.quarterId} not found`,
+        });
+        continue;
+      }
+      if (studyYearId != null && quarterStudyYear !== studyYearId) {
+        errors.push({
+          message: `Row ${entry.row}: quarter ${entry.quarterId} not in selected study year`,
+        });
+        continue;
+      }
+      if (student.studyYearId !== quarterStudyYear) {
+        errors.push({
+          message: `Row ${entry.row}: student "${entry.studentId}" is in another study year`,
+        });
+        continue;
+      }
+      if (!subjectSet.has(entry.subjectId)) {
+        errors.push({
+          message: `Row ${entry.row}: subject ${entry.subjectId} not found`,
+        });
+        continue;
+      }
+
+      const whereUnique: MarkWhereUniqueInput = {
+        student_subject_quarter_unique: {
+          studentId: entry.studentId,
+          subjectId: entry.subjectId,
+          quarterId: entry.quarterId,
+        },
+      };
+
+      ops.push(
+        prisma.mark.upsert({
+          where: whereUnique,
+          update: { score: entry.score },
+          create: {
+            studentId: entry.studentId,
+            subjectId: entry.subjectId,
+            quarterId: entry.quarterId,
+            score: entry.score,
+          },
+        })
+      );
+    }
+
+    const saved: any[] = [];
+    const chunkSize = 500;
+    for (let i = 0; i < ops.length; i += chunkSize) {
+      const chunk = ops.slice(i, i + chunkSize);
+      const result = await prisma.$transaction(chunk);
+      saved.push(...result);
+    }
+
+    res.json({ updated: saved.length, errors });
   } catch (err) {
     if (isPrismaKnownError(err) && err.code === "P2003") {
       return res.status(400).json({
