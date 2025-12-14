@@ -154,7 +154,15 @@ export const upsertBulkMarks = async (req: Request, res: Response) => {
   }
 
   const errors: Array<{ message: string }> = [];
-  const normalized = entriesInput.map((entry, idx) => ({
+  type NormalizedEntry = {
+    row: number;
+    studentId: string;
+    subjectId: number;
+    quarterId: number;
+    score: number;
+  };
+
+  const normalized: NormalizedEntry[] = entriesInput.map((entry, idx) => ({
     row: idx + 1,
     studentId:
       typeof entry?.studentId === "string"

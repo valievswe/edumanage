@@ -299,7 +299,15 @@ export const upsertBulkMonitoring = async (req: Request, res: Response) => {
   }
 
   const errors: Array<{ message: string }> = [];
-  const normalized = entriesInput.map((entry, idx) => {
+  type NormalizedEntry = {
+    row: number;
+    studentId: string;
+    subjectId: number;
+    studyYearId: number;
+    score: number;
+    month: string | null;
+  };
+  const normalized: NormalizedEntry[] = entriesInput.map((entry, idx) => {
     const month = normalizeMonth(entry?.month);
     return {
       row: idx + 1,
