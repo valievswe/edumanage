@@ -266,6 +266,7 @@ const saveStudent = async () => {
   try {
     if (editingId.value) {
       await api.put(`/api/students/${editingId.value}`, {
+        id: form.id,
         fullName: form.fullName,
         gradeId: form.gradeId,
       })
@@ -603,7 +604,6 @@ onMounted(async () => {
             <VTextField
               v-model="form.id"
               label="Student ID"
-              :disabled="!!editingId"
               required
             />
             <VTextField

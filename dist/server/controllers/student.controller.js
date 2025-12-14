@@ -1,7 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.importStudents = exports.deleteStudent = exports.updateStudent = exports.getStudentMarks = exports.createStudent = exports.getStudentById = exports.getStudents = exports.getStudentOptions = void 0;
-const client_1 = require("@prisma/client");
 const prisma_1 = require("../../db/prisma");
 const parseBoolean = (value) => {
     if (typeof value === "boolean")
@@ -10,7 +9,7 @@ const parseBoolean = (value) => {
         return ["true", "1", "yes", "on"].includes(value.toLowerCase());
     return false;
 };
-const isPrismaKnownError = (err) => err instanceof client_1.Prisma.PrismaClientKnownRequestError;
+const isPrismaKnownError = (err) => Boolean(err && typeof err.code === "string");
 const getStudentOptions = async (req, res) => {
     try {
         const { search, studyYearId, gradeId, limit } = req.query;
@@ -180,9 +179,17 @@ const getStudentMarks = async (req, res) => {
 exports.getStudentMarks = getStudentMarks;
 const updateStudent = async (req, res) => {
     try {
-        const { id } = req.params;
+        const currentId = req.params.id;
         const { fullName, gradeId } = req.body;
+        const incomingId = typeof req.body?.id === "string" ? req.body.id.trim() : "";
         const data = {};
+        if (incomingId && incomingId !== currentId) {
+            const exists = await prisma_1.prisma.student.findUnique({ where: { id: incomingId } });
+            if (exists) {
+                return res.status(400).json({ message: "Student with this ID already exists" });
+            }
+            data.id = incomingId;
+        }
         if (typeof fullName === "string" && fullName.trim()) {
             data.fullName = fullName.trim();
         }
@@ -198,7 +205,7 @@ const updateStudent = async (req, res) => {
             }
         }
         const student = await prisma_1.prisma.student.update({
-            where: { id },
+            where: { id: currentId },
             data,
             include: { grade: true },
         });

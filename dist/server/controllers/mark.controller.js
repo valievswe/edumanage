@@ -1,9 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.upsertBulkMarks = exports.deleteMark = exports.updateMark = exports.createMark = exports.getMarkById = exports.getMarks = void 0;
-const client_1 = require("@prisma/client");
 const prisma_1 = require("../../db/prisma");
-const isPrismaKnownError = (err) => err instanceof client_1.Prisma.PrismaClientKnownRequestError;
+const isPrismaKnownError = (err) => Boolean(err && typeof err.code === "string");
 const getMarks = async (req, res) => {
     try {
         const { studentId, subjectId, quarterId, gradeId, studyYearId, search } = req.query;

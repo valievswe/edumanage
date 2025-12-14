@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
 import { prisma } from "../../db/prisma";
 
@@ -9,13 +8,21 @@ const parseBoolean = (value: unknown): boolean => {
   return false;
 };
 
-const isPrismaKnownError = (err: unknown): err is Prisma.PrismaClientKnownRequestError =>
-  err instanceof Prisma.PrismaClientKnownRequestError;
+type StudentWhereInput = NonNullable<Parameters<typeof prisma.student.findMany>[0]>["where"];
+type MarkWhereInput = NonNullable<Parameters<typeof prisma.mark.findMany>[0]>["where"];
+type MonitoringWhereInput = NonNullable<
+  Parameters<typeof prisma.monitoring.findMany>[0]
+>["where"];
+type StudentUpdateData = Parameters<typeof prisma.student.update>[0]["data"];
+
+type PrismaKnownError = { code?: string };
+const isPrismaKnownError = (err: unknown): err is PrismaKnownError =>
+  Boolean(err && typeof (err as any).code === "string");
 
 export const getStudentOptions = async (req: Request, res: Response) => {
   try {
     const { search, studyYearId, gradeId, limit } = req.query;
-    const where: Prisma.StudentWhereInput = {};
+    const where: StudentWhereInput = {};
 
     if (studyYearId) where.studyYearId = Number(studyYearId);
     if (gradeId) where.gradeId = Number(gradeId);
@@ -48,7 +55,7 @@ export const getStudentOptions = async (req: Request, res: Response) => {
 export const getStudents = async (req: Request, res: Response) => {
   try {
     const { search, studyYearId, gradeId } = req.query;
-    const where: Prisma.StudentWhereInput = {};
+    const where: StudentWhereInput = {};
 
     if (studyYearId) where.studyYearId = Number(studyYearId);
     if (gradeId) where.gradeId = Number(gradeId);
@@ -181,9 +188,20 @@ export const getStudentMarks = async (req: Request, res: Response) => {
 
 export const updateStudent = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const currentId = req.params.id;
     const { fullName, gradeId } = req.body;
-    const data: Prisma.StudentUncheckedUpdateInput = {};
+    const incomingId =
+      typeof req.body?.id === "string" ? req.body.id.trim() : "";
+    const data: StudentUpdateData = {};
+
+    if (incomingId && incomingId !== currentId) {
+      const exists = await prisma.student.findUnique({ where: { id: incomingId } });
+      if (exists) {
+        return res.status(400).json({ message: "Student with this ID already exists" });
+      }
+      data.id = incomingId;
+    }
+
     if (typeof fullName === "string" && fullName.trim()) {
       data.fullName = fullName.trim();
     }
@@ -197,7 +215,7 @@ export const updateStudent = async (req: Request, res: Response) => {
       }
     }
     const student = await prisma.student.update({
-      where: { id },
+      where: { id: currentId },
       data,
       include: { grade: true },
     });

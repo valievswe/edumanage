@@ -1,9 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteSubject = exports.updateSubject = exports.createSubject = exports.getSubjects = void 0;
-const client_1 = require("@prisma/client");
 const prisma_1 = require("../../db/prisma");
-const isPrismaKnownError = (err) => err instanceof client_1.Prisma.PrismaClientKnownRequestError;
+const isPrismaKnownError = (err) => Boolean(err && typeof err.code === "string");
 const getSubjects = async (_, res) => {
     try {
         const subjects = await prisma_1.prisma.subject.findMany({ orderBy: { name: "asc" } });

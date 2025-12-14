@@ -1,9 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteQuarter = exports.createQuarter = exports.getQuarters = void 0;
-const client_1 = require("@prisma/client");
 const prisma_1 = require("../../db/prisma");
-const isPrismaKnownError = (err) => err instanceof client_1.Prisma.PrismaClientKnownRequestError;
+const isPrismaKnownError = (err) => Boolean(err && typeof err.code === "string");
 const getQuarters = async (_, res) => {
     const quarters = await prisma_1.prisma.quarter.findMany({
         include: { studyYear: true },

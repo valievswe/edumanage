@@ -1,21 +1,25 @@
 import { Request, Response } from "express";
-import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 
-const isPrismaKnownError = (err: unknown): err is Prisma.PrismaClientKnownRequestError =>
-  err instanceof Prisma.PrismaClientKnownRequestError;
+type MarkWhereInput = NonNullable<Parameters<typeof prisma.mark.findMany>[0]>["where"];
+type StudentWhereInput = NonNullable<Parameters<typeof prisma.student.findMany>[0]>["where"];
+type MarkWhereUniqueInput = Parameters<typeof prisma.mark.findUnique>[0]["where"];
+
+type PrismaKnownError = { code?: string };
+const isPrismaKnownError = (err: unknown): err is PrismaKnownError =>
+  Boolean(err && typeof (err as any).code === "string");
 
 export const getMarks = async (req: Request, res: Response) => {
   try {
     const { studentId, subjectId, quarterId, gradeId, studyYearId, search } =
       req.query;
-    const where: Prisma.MarkWhereInput = {};
+    const where: MarkWhereInput = {};
 
     if (studentId) where.studentId = String(studentId);
     if (subjectId) where.subjectId = Number(subjectId);
     if (quarterId) where.quarterId = Number(quarterId);
 
-    const studentFilter: Prisma.StudentWhereInput = {};
+    const studentFilter: StudentWhereInput = {};
     if (studyYearId) studentFilter.studyYearId = Number(studyYearId);
     if (gradeId) studentFilter.gradeId = Number(gradeId);
     if (search && typeof search === "string") {
@@ -145,7 +149,7 @@ export const upsertBulkMarks = async (req: Request, res: Response) => {
         if (!studentId || !subjectId || !quarterId || typeof score !== "number")
           return null;
 
-        const whereUnique: Prisma.MarkWhereUniqueInput = {
+        const whereUnique: MarkWhereUniqueInput = {
           student_subject_quarter_unique: { studentId, subjectId, quarterId },
         };
 

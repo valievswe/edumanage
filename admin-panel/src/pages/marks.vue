@@ -18,6 +18,7 @@ const errorMessage = ref('')
 const editDialog = ref(false)
 const saving = ref(false)
 const selectedMark = ref<Mark | null>(null)
+const deletingMarkId = ref<number | null>(null)
 const editForm = reactive({
   score: 0,
 })
@@ -196,6 +197,21 @@ const updateMark = async () => {
     errorMessage.value = err?.response?.data?.message || 'Failed to update mark.'
   } finally {
     saving.value = false
+  }
+}
+
+const deleteMark = async (mark: Mark) => {
+  if (!confirm('Delete this mark?')) return
+  deletingMarkId.value = mark.id
+  try {
+    await api.delete(`/api/marks/${mark.id}`)
+    await fetchMarks()
+    showSnackbar('Mark deleted')
+  } catch (err: any) {
+    errorMessage.value = err?.response?.data?.message || 'Failed to delete mark.'
+    showSnackbar('Failed to delete mark', 'error')
+  } finally {
+    deletingMarkId.value = null
   }
 }
 
@@ -761,6 +777,13 @@ watch(marks, () => {
           variant="text"
           icon="ri-pencil-line"
           @click="openEditDialog(item)"
+        />
+        <VBtn
+          variant="text"
+          icon="ri-delete-bin-6-line"
+          color="error"
+          :loading="deletingMarkId === item.id"
+          @click="deleteMark(item)"
         />
       </template>
     </VDataTable>

@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
 import { prisma } from "../../db/prisma";
 
@@ -17,20 +16,26 @@ const normalizeMonth = (value: unknown): string | null => {
   return trimmed;
 };
 
-const isPrismaKnownError = (err: unknown): err is Prisma.PrismaClientKnownRequestError =>
-  err instanceof Prisma.PrismaClientKnownRequestError;
+type MonitoringWhereInput = NonNullable<
+  Parameters<typeof prisma.monitoring.findMany>[0]
+>["where"];
+type StudentWhereInput = NonNullable<Parameters<typeof prisma.student.findMany>[0]>["where"];
+
+type PrismaKnownError = { code?: string };
+const isPrismaKnownError = (err: unknown): err is PrismaKnownError =>
+  Boolean(err && typeof (err as any).code === "string");
 
 export const getMonitorings = async (req: Request, res: Response) => {
   try {
     const { studyYearId, gradeId, search, month } = req.query;
-    const where: Prisma.MonitoringWhereInput = {};
+    const where: MonitoringWhereInput = {};
 
     if (studyYearId) where.studyYearId = Number(studyYearId);
     if (month && typeof month === "string" && month.trim()) {
       where.month = normalizeMonth(month) ?? undefined;
     }
 
-    const studentFilter: Prisma.StudentWhereInput = {};
+    const studentFilter: StudentWhereInput = {};
     if (gradeId) studentFilter.gradeId = Number(gradeId);
     if (search && typeof search === "string") {
       studentFilter.OR = [

@@ -1,9 +1,9 @@
 import { Request, Response } from "express";
-import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 
-const isPrismaKnownError = (err: unknown): err is Prisma.PrismaClientKnownRequestError =>
-  err instanceof Prisma.PrismaClientKnownRequestError;
+type PrismaKnownError = { code?: string };
+const isPrismaKnownError = (err: unknown): err is PrismaKnownError =>
+  Boolean(err && typeof (err as any).code === "string");
 
 export const getYears = async (_: Request, res: Response) => {
   const years = await prisma.studyYear.findMany({

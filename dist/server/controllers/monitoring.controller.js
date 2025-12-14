@@ -1,7 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.upsertBulkMonitoring = exports.deleteMonitoring = exports.updateMonitoring = exports.createMonitoring = exports.getMonitoringById = exports.getMonitorings = void 0;
-const client_1 = require("@prisma/client");
 const prisma_1 = require("../../db/prisma");
 const normalizeMonth = (value) => {
     if (typeof value !== "string")
@@ -19,7 +18,7 @@ const normalizeMonth = (value) => {
     // Legacy: allow arbitrary month labels (e.g. "Yanvar", "January", "1-oy").
     return trimmed;
 };
-const isPrismaKnownError = (err) => err instanceof client_1.Prisma.PrismaClientKnownRequestError;
+const isPrismaKnownError = (err) => Boolean(err && typeof err.code === "string");
 const getMonitorings = async (req, res) => {
     try {
         const { studyYearId, gradeId, search, month } = req.query;
