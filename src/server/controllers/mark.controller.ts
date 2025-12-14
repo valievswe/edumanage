@@ -166,22 +166,24 @@ export const upsertBulkMarks = async (req: Request, res: Response) => {
   }));
 
   const studentIds = Array.from(
-    new Set(normalized.map((e) => e.studentId).filter(Boolean))
+    new Set(
+      normalized
+        .map((e) => e.studentId)
+        .filter((id): id is string => Boolean(id))
+    )
   );
   const subjectIds = Array.from(
     new Set(
       normalized
         .map((e) => e.subjectId)
-        .filter((id) => Number.isFinite(id))
-        .map(Number)
+        .filter((id): id is number => Number.isFinite(id))
     )
   );
   const quarterIds = Array.from(
     new Set(
       normalized
         .map((e) => e.quarterId)
-        .filter((id) => Number.isFinite(id))
-        .map(Number)
+        .filter((id): id is number => Number.isFinite(id))
     )
   );
 

@@ -19,6 +19,21 @@ const normalizeMonth = (value) => {
     return trimmed;
 };
 const isPrismaKnownError = (err) => Boolean(err && typeof err.code === "string");
+const monthToDate = (value) => {
+    const match = value.match(/^(\d{4})-(0[1-9]|1[0-2])$/);
+    if (match) {
+        return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
+    }
+    return null;
+};
+const isMonthWithinStudyYear = (month, studyYear) => {
+    const monthDate = monthToDate(month);
+    if (!monthDate)
+        return true; // legacy labels (e.g. "Yanvar") are allowed
+    const start = new Date(Date.UTC(studyYear.startDate.getUTCFullYear(), studyYear.startDate.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(studyYear.endDate.getUTCFullYear(), studyYear.endDate.getUTCMonth(), 1));
+    return monthDate.getTime() >= start.getTime() && monthDate.getTime() <= end.getTime();
+};
 const getMonitorings = async (req, res) => {
     try {
         const { studyYearId, gradeId, search, month } = req.query;
@@ -99,6 +114,30 @@ const createMonitoring = async (req, res) => {
         if (typeof score !== "number") {
             return res.status(400).json({ message: "score must be a number" });
         }
+        const student = await prisma_1.prisma.student.findUnique({
+            where: { id: studentId.trim() },
+            select: { id: true, studyYearId: true },
+        });
+        if (!student) {
+            return res.status(404).json({ message: "Student not found" });
+        }
+        if (student.studyYearId !== Number(studyYearId)) {
+            return res
+                .status(400)
+                .json({ message: "Student belongs to a different study year" });
+        }
+        const studyYear = await prisma_1.prisma.studyYear.findUnique({
+            where: { id: Number(studyYearId) },
+            select: { id: true, startDate: true, endDate: true },
+        });
+        if (!studyYear) {
+            return res.status(400).json({ message: "Study year not found" });
+        }
+        if (!isMonthWithinStudyYear(month, studyYear)) {
+            return res.status(400).json({
+                message: "month is outside the selected study year range",
+            });
+        }
         const monitoring = await prisma_1.prisma.monitoring.upsert({
             where: {
                 monitoring_unique: {
@@ -146,6 +185,27 @@ const updateMonitoring = async (req, res) => {
             return res
                 .status(400)
                 .json({ message: "month must be a non-empty string" });
+        }
+        const current = await prisma_1.prisma.monitoring.findUnique({
+            where: { id: Number(id) },
+            include: { studyYear: true },
+        });
+        if (!current) {
+            return res.status(404).json({ message: "Monitoring not found" });
+        }
+        const targetStudyYearId = studyYearId ?? current.studyYearId;
+        const targetMonth = month ?? current.month;
+        const studyYear = await prisma_1.prisma.studyYear.findUnique({
+            where: { id: Number(targetStudyYearId) },
+            select: { id: true, startDate: true, endDate: true },
+        });
+        if (!studyYear) {
+            return res.status(400).json({ message: "Study year not found" });
+        }
+        if (!isMonthWithinStudyYear(targetMonth, studyYear)) {
+            return res.status(400).json({
+                message: "month is outside the study year range",
+            });
         }
         const data = {};
         if (typeof score === "number")
@@ -201,47 +261,141 @@ const deleteMonitoring = async (req, res) => {
 };
 exports.deleteMonitoring = deleteMonitoring;
 const upsertBulkMonitoring = async (req, res) => {
-    const { entries } = req.body;
-    if (!Array.isArray(entries) || !entries.length) {
+    const entriesInput = Array.isArray(req.body?.entries)
+        ? req.body.entries
+        : [];
+    const gradeIdRaw = req.body?.gradeId;
+    const gradeId = gradeIdRaw == null || gradeIdRaw === "" ? null : Number(gradeIdRaw);
+    if (!entriesInput.length) {
         return res.status(400).json({ message: "Entries array is required" });
     }
-    const normalize = (value) => normalizeMonth(value);
+    if (gradeId != null && !Number.isFinite(gradeId)) {
+        return res.status(400).json({ message: "gradeId must be a number" });
+    }
+    const errors = [];
+    const normalized = entriesInput.map((entry, idx) => {
+        const month = normalizeMonth(entry?.month);
+        return {
+            row: idx + 1,
+            studentId: typeof entry?.studentId === "string"
+                ? entry.studentId.trim()
+                : String(entry?.studentId ?? "").trim(),
+            subjectId: Number(entry?.subjectId),
+            studyYearId: Number(entry?.studyYearId),
+            score: Number(entry?.score),
+            month,
+        };
+    });
+    const studentIds = Array.from(new Set(normalized
+        .map((e) => e.studentId)
+        .filter((id) => Boolean(id))));
+    const subjectIds = Array.from(new Set(normalized
+        .map((e) => e.subjectId)
+        .filter((id) => Number.isFinite(id))));
+    const studyYearIds = Array.from(new Set(normalized
+        .map((e) => e.studyYearId)
+        .filter((id) => Number.isFinite(id))));
     try {
+        const [students, subjects, studyYears] = await Promise.all([
+            prisma_1.prisma.student.findMany({
+                where: { id: { in: studentIds } },
+                select: { id: true, gradeId: true, studyYearId: true },
+            }),
+            prisma_1.prisma.subject.findMany({
+                where: { id: { in: subjectIds } },
+                select: { id: true },
+            }),
+            prisma_1.prisma.studyYear.findMany({
+                where: { id: { in: studyYearIds } },
+                select: { id: true, startDate: true, endDate: true },
+            }),
+        ]);
+        const studentMap = new Map(students.map((s) => [s.id, { gradeId: s.gradeId, studyYearId: s.studyYearId }]));
+        const subjectSet = new Set(subjects.map((s) => s.id));
+        const studyYearMap = new Map(studyYears.map((y) => [y.id, { startDate: y.startDate, endDate: y.endDate }]));
         const ops = [];
-        for (const entry of entries) {
-            const studentId = typeof entry?.studentId === "string" ? entry.studentId.trim() : "";
-            const subjectId = Number(entry?.subjectId);
-            const studyYearId = Number(entry?.studyYearId);
-            const score = entry?.score;
-            const month = normalize(entry?.month);
-            if (!studentId ||
-                !Number.isFinite(subjectId) ||
-                !Number.isFinite(studyYearId) ||
-                !month)
+        for (const entry of normalized) {
+            if (!entry.studentId) {
+                errors.push({ message: `Row ${entry.row}: studentId is required` });
                 continue;
-            if (typeof score !== "number")
+            }
+            if (!Number.isFinite(entry.subjectId) ||
+                !Number.isFinite(entry.studyYearId) ||
+                !entry.month) {
+                errors.push({
+                    message: `Row ${entry.row}: subjectId, studyYearId, and month are required`,
+                });
                 continue;
+            }
+            if (!Number.isFinite(entry.score)) {
+                errors.push({ message: `Row ${entry.row}: score must be a number` });
+                continue;
+            }
+            const student = studentMap.get(entry.studentId);
+            if (!student) {
+                errors.push({
+                    message: `Row ${entry.row}: student "${entry.studentId}" not found`,
+                });
+                continue;
+            }
+            if (gradeId != null && student.gradeId !== gradeId) {
+                errors.push({
+                    message: `Row ${entry.row}: student "${entry.studentId}" not in selected grade`,
+                });
+                continue;
+            }
+            if (student.studyYearId !== entry.studyYearId) {
+                errors.push({
+                    message: `Row ${entry.row}: student "${entry.studentId}" is in another study year`,
+                });
+                continue;
+            }
+            if (!subjectSet.has(entry.subjectId)) {
+                errors.push({
+                    message: `Row ${entry.row}: subject ${entry.subjectId} not found`,
+                });
+                continue;
+            }
+            const studyYear = studyYearMap.get(entry.studyYearId);
+            if (!studyYear) {
+                errors.push({
+                    message: `Row ${entry.row}: study year ${entry.studyYearId} not found`,
+                });
+                continue;
+            }
+            if (!isMonthWithinStudyYear(entry.month, studyYear)) {
+                errors.push({
+                    message: `Row ${entry.row}: month "${entry.month}" is outside the study year range`,
+                });
+                continue;
+            }
             ops.push(prisma_1.prisma.monitoring.upsert({
                 where: {
                     monitoring_unique: {
-                        studentId,
-                        subjectId,
-                        studyYearId,
-                        month,
+                        studentId: entry.studentId,
+                        subjectId: entry.subjectId,
+                        studyYearId: entry.studyYearId,
+                        month: entry.month,
                     },
                 },
-                update: { score },
-                create: { studentId, subjectId, studyYearId, month, score },
+                update: { score: entry.score },
+                create: {
+                    studentId: entry.studentId,
+                    subjectId: entry.subjectId,
+                    studyYearId: entry.studyYearId,
+                    month: entry.month,
+                    score: entry.score,
+                },
             }));
         }
-        const entriesSaved = [];
+        const saved = [];
         const chunkSize = 500;
         for (let i = 0; i < ops.length; i += chunkSize) {
             const chunk = ops.slice(i, i + chunkSize);
-            const saved = await prisma_1.prisma.$transaction(chunk);
-            entriesSaved.push(...saved);
+            const result = await prisma_1.prisma.$transaction(chunk);
+            saved.push(...result);
         }
-        res.json({ updated: entriesSaved.length, entries: entriesSaved });
+        res.json({ updated: saved.length, errors });
     }
     catch (err) {
         if (isPrismaKnownError(err) && err.code === "P2003") {
