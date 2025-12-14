@@ -827,49 +827,51 @@ watch(quickStudents, () => {
           </VCol>
         </VRow>
 
-        <VTable
+        <div
           v-if="quickReady() && quickStudents.length"
-          class="bulk-table"
+          class="sheet-scroll"
           @paste.prevent="onQuickPaste"
         >
-          <thead>
-            <tr>
-              <th>Student</th>
-              <th>Grade</th>
-              <th
-                v-for="subjectId in quickSelections.subjectIds"
-                :key="subjectId"
-                style="min-width: 180px;"
-              >
-                {{ subjectMap.get(subjectId)?.name || 'Subject' }}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="student in quickStudents" :key="student.id">
-              <td>{{ student.fullName }}</td>
-              <td>{{ student.grade?.name || '—' }}</td>
-              <td
-                v-for="subjectId in quickSelections.subjectIds"
-                :key="`${student.id}-${subjectId}`"
-              >
-                <VTextField
-                  v-model.number="quickScores[student.id][subjectId]"
-                  type="number"
-                  density="compact"
-                  hide-details
-                  min="0"
-                  max="100"
-                  :error="scoreInvalid(quickScores[student.id]?.[subjectId])"
-                  :error-messages="scoreInvalid(quickScores[student.id]?.[subjectId]) ? '0-100 only' : undefined"
-                />
-                <div class="text-caption text-medium-emphasis">
-                  Existing: {{ getQuickExistingScore(student.id, subjectId) ?? '—' }}
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </VTable>
+          <VTable class="bulk-table">
+            <thead>
+              <tr>
+                <th>Student</th>
+                <th>Grade</th>
+                <th
+                  v-for="subjectId in quickSelections.subjectIds"
+                  :key="subjectId"
+                  style="min-width: 180px;"
+                >
+                  {{ subjectMap.get(subjectId)?.name || 'Subject' }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="student in quickStudents" :key="student.id">
+                <td>{{ student.fullName }}</td>
+                <td>{{ student.grade?.name || '—' }}</td>
+                <td
+                  v-for="subjectId in quickSelections.subjectIds"
+                  :key="`${student.id}-${subjectId}`"
+                >
+                  <VTextField
+                    v-model.number="quickScores[student.id][subjectId]"
+                    type="number"
+                    density="compact"
+                    hide-details
+                    min="0"
+                    max="100"
+                    :error="scoreInvalid(quickScores[student.id]?.[subjectId])"
+                    :error-messages="scoreInvalid(quickScores[student.id]?.[subjectId]) ? '0-100 only' : undefined"
+                  />
+                  <div class="text-caption text-medium-emphasis">
+                    Existing: {{ getQuickExistingScore(student.id, subjectId) ?? '—' }}
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </VTable>
+        </div>
         <p v-else class="text-medium-emphasis mb-0">
           Select all fields to begin entering monitoring scores.
         </p>
@@ -1223,3 +1225,23 @@ watch(quickStudents, () => {
     </VSnackbar>
   </div>
 </template>
+
+<style scoped>
+.sheet-scroll {
+  overflow: auto;
+}
+.bulk-table th:first-child,
+.bulk-table td:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--v-theme-surface);
+  z-index: 2;
+}
+.bulk-table th:nth-child(2),
+.bulk-table td:nth-child(2) {
+  position: sticky;
+  left: 140px;
+  background: var(--v-theme-surface);
+  z-index: 2;
+}
+</style>

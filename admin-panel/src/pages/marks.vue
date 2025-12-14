@@ -769,8 +769,8 @@ watch(students, () => {
           v-if="bulkSelections.subjectIds.length && bulkSelections.quarterId"
           @paste.prevent="onBulkPaste"
         >
+          <div class="sheet-scroll" v-if="filteredStudents.length">
           <VTable
-            v-if="filteredStudents.length"
             class="bulk-table"
           >
             <thead>
@@ -814,6 +814,7 @@ watch(students, () => {
               </tr>
             </tbody>
           </VTable>
+          </div>
           <p
             v-else
             class="text-medium-emphasis mb-0"
@@ -1197,3 +1198,23 @@ watch(students, () => {
     </VSnackbar>
   </div>
 </template>
+
+<style scoped>
+.sheet-scroll {
+  overflow: auto;
+}
+.bulk-table th:first-child,
+.bulk-table td:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--v-theme-surface);
+  z-index: 2;
+}
+.bulk-table th:nth-child(2),
+.bulk-table td:nth-child(2) {
+  position: sticky;
+  left: 140px;
+  background: var(--v-theme-surface);
+  z-index: 2;
+}
+</style>

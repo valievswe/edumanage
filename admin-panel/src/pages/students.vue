@@ -62,6 +62,7 @@ const importForm = reactive({
 })
 const importSubmitting = ref(false)
 const importPasting = ref(false)
+const manualRows = ref<Array<{ id: string; fullName: string; gradeId: number | null }>>([])
 
 const headers = [
   { title: 'ID', key: 'id' },
@@ -123,6 +124,7 @@ const resetImport = () => {
   importSummary.skippedExisting = 0
   importSummary.duplicatesMerged = 0
   importSummary.invalid = 0
+  manualRows.value = [{ id: '', fullName: '', gradeId: importForm.gradeId }]
 }
 
 const openImportDialog = () => {
@@ -244,8 +246,61 @@ const pasteImportFromClipboard = async () => {
   }
 }
 
+const addManualRow = () => {
+  manualRows.value.push({
+    id: '',
+    fullName: '',
+    gradeId: importForm.gradeId ?? null,
+  })
+}
+
+const removeManualRow = (idx: number) => {
+  manualRows.value.splice(idx, 1)
+  if (!manualRows.value.length) addManualRow()
+}
+
+const applyManualRows = () => {
+  const errors: string[] = []
+  const cleaned = manualRows.value
+    .map(row => ({
+      id: row.id?.trim?.() || '',
+      fullName: row.fullName?.trim?.() || '',
+      gradeId: row.gradeId ?? importForm.gradeId ?? null,
+    }))
+    .filter(row => {
+      if (!row.id && !row.fullName) return false
+      if (!row.id || !row.fullName) {
+        errors.push('Rows must include both ID and Full name.')
+        return false
+      }
+      return true
+    })
+
+  if (!cleaned.length) {
+    importErrors.value = ['Add at least one valid row.']
+    return
+  }
+
+  importEntries.value = cleaned
+  importSummary.total = cleaned.length
+  importSummary.invalid = 0
+  importSummary.duplicatesMerged = 0
+  importErrors.value = errors.slice(0, 10)
+}
+
 const submitImport = async () => {
-  if (!importEntries.value.length || !importForm.studyYearId) return
+  const preparedEntries = importEntries.value
+    .map(entry => ({
+      id: entry.id?.trim?.() || '',
+      fullName: entry.fullName?.trim?.() || '',
+      gradeId: entry.gradeId ?? importForm.gradeId ?? null,
+    }))
+    .filter(entry => entry.id && entry.fullName)
+
+  if (!preparedEntries.length || !importForm.studyYearId) {
+    importErrors.value = ['Add at least one valid row (ID and Full name) and select study year.']
+    return
+  }
   importSubmitting.value = true
   importErrors.value = []
   try {
@@ -253,7 +308,7 @@ const submitImport = async () => {
       studyYearId: importForm.studyYearId,
       gradeId: importForm.gradeId,
       updateExisting: importForm.updateExisting,
-      entries: importEntries.value,
+      entries: preparedEntries,
     })
     importSummary.created = data.created
     importSummary.updated = data.updated
@@ -574,6 +629,99 @@ onMounted(async () => {
           </VCol>
         </VRow>
 
+          <VCard
+            variant="outlined"
+            class="mt-4"
+          >
+            <VCardTitle class="pb-0">Sheet entry (type or paste)</VCardTitle>
+            <VCardSubtitle class="text-medium-emphasis">
+              Build rows directly if you don’t have a file. Columns: ID, Full name, Grade.
+            </VCardSubtitle>
+            <VCardText>
+              <div class="d-flex gap-2 mb-3">
+                <VBtn
+                  size="small"
+                  color="primary"
+                  @click="addManualRow"
+                >
+                  Add row
+                </VBtn>
+                <VBtn
+                  size="small"
+                  variant="outlined"
+                  color="secondary"
+                  :loading="importPasting"
+                  @click="pasteImportFromClipboard"
+                >
+                  Paste from clipboard
+                </VBtn>
+                <VBtn
+                  size="small"
+                  variant="outlined"
+                  color="success"
+                  @click="applyManualRows"
+                >
+                  Use these rows
+                </VBtn>
+              </div>
+              <div class="sheet-scroll">
+                <VTable class="bulk-table">
+                  <thead>
+                    <tr>
+                      <th style="min-width: 140px;">ID</th>
+                      <th style="min-width: 220px;">Full name</th>
+                      <th style="min-width: 160px;">Grade</th>
+                      <th style="width: 80px;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="(row, idx) in manualRows"
+                      :key="idx"
+                    >
+                      <td>
+                        <VTextField
+                          v-model="row.id"
+                          hide-details
+                          density="compact"
+                          placeholder="Student ID"
+                        />
+                      </td>
+                      <td>
+                        <VTextField
+                          v-model="row.fullName"
+                          hide-details
+                          density="compact"
+                          placeholder="Full name"
+                        />
+                      </td>
+                      <td>
+                        <VSelect
+                          v-model="row.gradeId"
+                          :items="grades"
+                          item-title="name"
+                          item-value="id"
+                          hide-details
+                          density="compact"
+                          clearable
+                          placeholder="Grade"
+                        />
+                      </td>
+                      <td>
+                        <VBtn
+                          icon="ri-delete-bin-6-line"
+                          variant="text"
+                          color="error"
+                          @click="removeManualRow(idx)"
+                        />
+                      </td>
+                    </tr>
+                  </tbody>
+                </VTable>
+              </div>
+            </VCardText>
+          </VCard>
+
           <VAlert
             v-if="importErrors.length"
             type="error"
@@ -789,3 +937,23 @@ onMounted(async () => {
     </VDialog>
   </div>
 </template>
+
+<style scoped>
+.sheet-scroll {
+  overflow: auto;
+}
+.bulk-table th:first-child,
+.bulk-table td:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--v-theme-surface);
+  z-index: 2;
+}
+.bulk-table th:nth-child(2),
+.bulk-table td:nth-child(2) {
+  position: sticky;
+  left: 140px;
+  background: var(--v-theme-surface);
+  z-index: 2;
+}
+</style>
