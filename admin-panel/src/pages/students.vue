@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import api from '@/utils/api'
-import type { Grade, Student, StudentMarksResponse, StudyYear } from '@/utils/types'
+import { readFirstSheetAsTable } from '@/utils/xlsxTable'
+import type {
+  Grade,
+  Student,
+  StudentImportResponse,
+  StudentMarksResponse,
+  StudyYear,
+} from '@/utils/types'
 
 const students = ref<Student[]>([])
 const years = ref<StudyYear[]>([])
@@ -34,6 +41,26 @@ const filters = reactive({
   gradeId: null as number | null,
   studyYearId: null as number | null,
 })
+
+const importDialog = ref(false)
+const importInputEl = ref<HTMLInputElement | null>(null)
+const importFileName = ref('')
+const importErrors = ref<string[]>([])
+const importEntries = ref<Array<{ id: string; fullName: string; gradeId: number | null }>>([])
+const importSummary = reactive({
+  total: 0,
+  created: 0,
+  updated: 0,
+  skippedExisting: 0,
+  duplicatesMerged: 0,
+  invalid: 0,
+})
+const importForm = reactive({
+  studyYearId: null as number | null,
+  gradeId: null as number | null,
+  updateExisting: false,
+})
+const importSubmitting = ref(false)
 
 const headers = [
   { title: 'ID', key: 'id' },
@@ -77,6 +104,138 @@ const fetchYears = async () => {
 const fetchGrades = async () => {
   const { data } = await api.get<Grade[]>('/api/grades')
   grades.value = data
+}
+
+const normalizeKey = (value: unknown) =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '')
+
+const resetImport = () => {
+  importFileName.value = ''
+  importErrors.value = []
+  importEntries.value = []
+  importSummary.total = 0
+  importSummary.created = 0
+  importSummary.updated = 0
+  importSummary.skippedExisting = 0
+  importSummary.duplicatesMerged = 0
+  importSummary.invalid = 0
+}
+
+const openImportDialog = () => {
+  resetImport()
+  importForm.studyYearId = filters.studyYearId
+  importForm.gradeId = filters.gradeId
+  importForm.updateExisting = false
+  importDialog.value = true
+}
+
+const onPickImportFile = () => importInputEl.value?.click()
+
+const onImportFileSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+
+  resetImport()
+  importFileName.value = file.name
+
+  if (!importForm.studyYearId) {
+    importErrors.value = ['Select a study year before importing.']
+    return
+  }
+
+  const gradeByName = new Map(grades.value.map(grade => [normalizeKey(grade.name), grade.id]))
+  const table = await readFirstSheetAsTable(file)
+  const idHeader =
+    table.headers.find(header =>
+      ['studentid', 'student_id', 'id', 'code'].includes(normalizeKey(header)),
+    ) ?? null
+  const nameHeader =
+    table.headers.find(header =>
+      ['fullname', 'full_name', 'fio', 'name'].includes(normalizeKey(header)),
+    ) ?? null
+  const gradeHeader =
+    table.headers.find(header =>
+      ['grade', 'class', 'grade_name'].includes(normalizeKey(header)),
+    ) ?? null
+
+  if (!idHeader || !nameHeader) {
+    importErrors.value = ['Missing required columns: studentId and fullName']
+    return
+  }
+
+  const errors: string[] = []
+  const seen = new Set<string>()
+  const mapped = new Map<string, { id: string; fullName: string; gradeId: number | null }>()
+  let duplicatesMerged = 0
+  let invalid = 0
+
+  table.rows.forEach((row, index) => {
+    const rowNumber = index + 2
+    const rawId = row[idHeader]
+    const rawName = row[nameHeader]
+    const id = typeof rawId === 'string' ? rawId.trim() : String(rawId ?? '').trim()
+    const fullName =
+      typeof rawName === 'string' ? rawName.trim() : String(rawName ?? '').trim()
+
+    if (!id || !fullName) {
+      invalid += 1
+      return
+    }
+
+    let gradeId = importForm.gradeId
+    if (gradeHeader) {
+      const rawGrade = row[gradeHeader]
+      const gradeKey = normalizeKey(rawGrade as string)
+      if (gradeKey) {
+        const matched = gradeByName.get(gradeKey)
+        if (!matched) {
+          errors.push(`Row ${rowNumber}: grade "${rawGrade}" not found`)
+          return
+        }
+        gradeId = matched
+      }
+    }
+
+    if (seen.has(id)) duplicatesMerged += 1
+    seen.add(id)
+    mapped.set(id, { id, fullName, gradeId: gradeId ?? null })
+  })
+
+  importEntries.value = Array.from(mapped.values())
+  importSummary.total = importEntries.value.length
+  importSummary.invalid = invalid
+  importSummary.duplicatesMerged = duplicatesMerged
+  importErrors.value = errors.slice(0, 50)
+}
+
+const submitImport = async () => {
+  if (!importEntries.value.length || !importForm.studyYearId) return
+  importSubmitting.value = true
+  importErrors.value = []
+  try {
+    const { data } = await api.post<StudentImportResponse>('/api/students/import', {
+      studyYearId: importForm.studyYearId,
+      gradeId: importForm.gradeId,
+      updateExisting: importForm.updateExisting,
+      entries: importEntries.value,
+    })
+    importSummary.created = data.created
+    importSummary.updated = data.updated
+    importSummary.skippedExisting = data.skippedExisting
+    showSnackbar(`Imported ${data.created} new, updated ${data.updated}`)
+    importDialog.value = false
+    await fetchStudents()
+  } catch (err: any) {
+    importErrors.value = [err?.response?.data?.message || 'Failed to import students.']
+    showSnackbar('Failed to import students', 'error')
+  } finally {
+    importSubmitting.value = false
+  }
 }
 
 const resetForm = () => {
@@ -134,12 +293,36 @@ const saveStudent = async () => {
 const deleteStudent = async (studentId: string) => {
   if (!confirm('Delete this student?')) return
   deleting.value = studentId
+  const performDelete = (force = false) =>
+    api.delete(`/api/students/${studentId}`, { params: force ? { force: true } : undefined })
   try {
-    await api.delete(`/api/students/${studentId}`)
+    await performDelete()
     await fetchStudents()
     showSnackbar('Student deleted')
   } catch (err: any) {
-    errorMessage.value = err?.response?.data?.message || 'Failed to delete student.'
+    const status = err?.response?.status
+    const data = err?.response?.data || {}
+    if (status === 409 && data?.code === 'STUDENT_HAS_RESULTS') {
+      const related = data?.details
+        ? ` (${data.details.marks ?? 0} marks, ${data.details.monitorings ?? 0} monitoring)`
+        : ''
+      const confirmCascade = confirm(
+        `${data?.message || 'Student has related marks or monitoring.'}${related}\nDelete everything?`,
+      )
+      if (confirmCascade) {
+        try {
+          await performDelete(true)
+          await fetchStudents()
+          showSnackbar('Student and related results deleted')
+          return
+        } catch (forceErr: any) {
+          errorMessage.value = forceErr?.response?.data?.message || 'Failed to delete student.'
+          showSnackbar('Failed to delete student', 'error')
+          return
+        }
+      }
+    }
+    errorMessage.value = data?.message || 'Failed to delete student.'
     showSnackbar('Failed to delete student', 'error')
   } finally {
     deleting.value = null
@@ -182,6 +365,13 @@ onMounted(async () => {
           Refresh
         </VBtn>
         <VBtn
+          variant="tonal"
+          color="secondary"
+          @click="openImportDialog"
+        >
+          Import XLSX
+        </VBtn>
+        <VBtn
           color="primary"
           @click="openCreateDialog"
         >
@@ -189,6 +379,14 @@ onMounted(async () => {
         </VBtn>
       </div>
     </div>
+
+    <input
+      ref="importInputEl"
+      type="file"
+      accept=".xlsx,.xls"
+      class="d-none"
+      @change="onImportFileSelected"
+    />
 
     <VAlert
       v-if="errorMessage"
@@ -269,6 +467,129 @@ onMounted(async () => {
         />
       </template>
     </VDataTable>
+
+    <VDialog
+      v-model="importDialog"
+      max-width="780"
+    >
+      <VCard>
+        <VCardTitle>Import students from XLSX</VCardTitle>
+        <VCardText>
+          <p class="text-body-2 text-medium-emphasis mb-3">
+            Required columns: <code>studentId</code>/<code>id</code> and <code>fullName</code>. Optional
+            <code>grade</code> column will match existing grade names.
+          </p>
+          <VRow>
+            <VCol cols="12" md="6">
+              <VSelect
+                v-model="importForm.studyYearId"
+                :items="years"
+                item-title="name"
+                item-value="id"
+                label="Study year"
+                required
+              />
+            </VCol>
+            <VCol cols="12" md="6">
+              <VSelect
+                v-model="importForm.gradeId"
+                :items="grades"
+                item-title="name"
+                item-value="id"
+                label="Grade (apply to all rows)"
+                clearable
+              />
+            </VCol>
+            <VCol cols="12" md="6">
+              <VSwitch
+                v-model="importForm.updateExisting"
+                label="Update existing students"
+                inset
+              />
+            </VCol>
+            <VCol
+              cols="12"
+              md="6"
+              class="d-flex align-center"
+            >
+              <VBtn
+                variant="tonal"
+                color="primary"
+                @click="onPickImportFile"
+              >
+                Choose file
+              </VBtn>
+              <span class="ms-3 text-body-2 text-medium-emphasis">
+                {{ importFileName || 'No file selected' }}
+              </span>
+            </VCol>
+          </VRow>
+
+          <VAlert
+            v-if="importErrors.length"
+            type="error"
+            variant="tonal"
+            class="mb-4"
+          >
+            <ul class="pl-4 mb-0">
+              <li
+                v-for="err in importErrors"
+                :key="err"
+              >
+                {{ err }}
+              </li>
+            </ul>
+          </VAlert>
+
+          <VCard
+            v-if="importEntries.length"
+            variant="outlined"
+            class="mb-2"
+          >
+            <VCardText class="py-3">
+              <div class="d-flex justify-space-between text-body-2">
+                <span>Rows ready</span>
+                <strong>{{ importEntries.length }}</strong>
+              </div>
+              <div class="d-flex justify-space-between text-body-2 text-medium-emphasis">
+                <span>Duplicates merged</span>
+                <span>{{ importSummary.duplicatesMerged }}</span>
+              </div>
+              <div class="d-flex justify-space-between text-body-2 text-medium-emphasis">
+                <span>Invalid rows ignored</span>
+                <span>{{ importSummary.invalid }}</span>
+              </div>
+              <div class="text-body-2 text-medium-emphasis mt-2">
+                Existing students will {{ importForm.updateExisting ? 'be updated' : 'be skipped' }}.
+              </div>
+            </VCardText>
+          </VCard>
+          <div
+            v-else
+            class="text-body-2 text-medium-emphasis"
+          >
+            Choose a file to preview rows before importing.
+          </div>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn
+            variant="text"
+            @click="importDialog = false"
+          >
+            Cancel
+          </VBtn>
+          <VBtn
+            color="primary"
+            :loading="importSubmitting"
+            :disabled="!importEntries.length || !importForm.studyYearId"
+            @click="submitImport"
+          >
+            Import
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
 
     <VDialog
       v-model="dialog"

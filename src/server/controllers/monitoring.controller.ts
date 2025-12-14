@@ -17,6 +17,9 @@ const normalizeMonth = (value: unknown): string | null => {
   return trimmed;
 };
 
+const isPrismaKnownError = (err: unknown): err is Prisma.PrismaClientKnownRequestError =>
+  err instanceof Prisma.PrismaClientKnownRequestError;
+
 export const getMonitorings = async (req: Request, res: Response) => {
   try {
     const { studyYearId, gradeId, search, month } = req.query;
@@ -50,7 +53,9 @@ export const getMonitorings = async (req: Request, res: Response) => {
     });
     res.json(monitorings);
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch monitorings", error: err });
+    res
+      .status(500)
+      .json({ message: "Failed to fetch monitorings", error: err });
   }
 };
 
@@ -59,9 +64,14 @@ export const getMonitoringById = async (req: Request, res: Response) => {
     const { id } = req.params;
     const monitoring = await prisma.monitoring.findUnique({
       where: { id: Number(id) },
-      include: { student: { include: { grade: true } }, subject: true, studyYear: true },
+      include: {
+        student: { include: { grade: true } },
+        subject: true,
+        studyYear: true,
+      },
     });
-    if (!monitoring) return res.status(404).json({ message: "Monitoring not found" });
+    if (!monitoring)
+      return res.status(404).json({ message: "Monitoring not found" });
     res.json(monitoring);
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch monitoring", error: err });
@@ -77,10 +87,17 @@ export const createMonitoring = async (req: Request, res: Response) => {
     const studyYearId = req.body?.studyYearId;
 
     if (!month || typeof studentId !== "string" || !studentId.trim()) {
-      return res.status(400).json({ message: "month and studentId are required" });
+      return res
+        .status(400)
+        .json({ message: "month and studentId are required" });
     }
-    if (!Number.isFinite(Number(subjectId)) || !Number.isFinite(Number(studyYearId))) {
-      return res.status(400).json({ message: "subjectId and studyYearId are required" });
+    if (
+      !Number.isFinite(Number(subjectId)) ||
+      !Number.isFinite(Number(studyYearId))
+    ) {
+      return res
+        .status(400)
+        .json({ message: "subjectId and studyYearId are required" });
     }
     if (typeof score !== "number") {
       return res.status(400).json({ message: "score must be a number" });
@@ -103,12 +120,23 @@ export const createMonitoring = async (req: Request, res: Response) => {
         subjectId: Number(subjectId),
         studyYearId: Number(studyYearId),
       },
-      include: { student: { include: { grade: true } }, subject: true, studyYear: true },
+      include: {
+        student: { include: { grade: true } },
+        subject: true,
+        studyYear: true,
+      },
     });
 
     res.status(201).json(monitoring);
   } catch (err) {
-    res.status(500).json({ message: "Failed to create monitoring", error: err });
+    if (isPrismaKnownError(err) && err.code === "P2003") {
+      return res
+        .status(400)
+        .json({ message: "Invalid student, subject, or study year reference" });
+    }
+    res
+      .status(500)
+      .json({ message: "Failed to create monitoring", error: err });
   }
 };
 
@@ -116,10 +144,15 @@ export const updateMonitoring = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { score, subjectId, studyYearId } = req.body;
-    const monthProvided = Object.prototype.hasOwnProperty.call(req.body ?? {}, "month");
+    const monthProvided = Object.prototype.hasOwnProperty.call(
+      req.body ?? {},
+      "month"
+    );
     const month = normalizeMonth(req.body?.month);
     if (monthProvided && !month) {
-      return res.status(400).json({ message: "month must be a non-empty string" });
+      return res
+        .status(400)
+        .json({ message: "month must be a non-empty string" });
     }
     const data: any = {};
     if (typeof score === "number") data.score = score;
@@ -129,11 +162,27 @@ export const updateMonitoring = async (req: Request, res: Response) => {
     const monitoring = await prisma.monitoring.update({
       where: { id: Number(id) },
       data,
-      include: { student: { include: { grade: true } }, subject: true, studyYear: true },
+      include: {
+        student: { include: { grade: true } },
+        subject: true,
+        studyYear: true,
+      },
     });
     res.json(monitoring);
   } catch (err) {
-    res.status(500).json({ message: "Failed to update monitoring", error: err });
+    if (isPrismaKnownError(err)) {
+      if (err.code === "P2025") {
+        return res.status(404).json({ message: "Monitoring not found" });
+      }
+      if (err.code === "P2003") {
+        return res.status(400).json({
+          message: "Invalid student, subject, or study year reference",
+        });
+      }
+    }
+    res
+      .status(500)
+      .json({ message: "Failed to update monitoring", error: err });
   }
 };
 
@@ -143,7 +192,12 @@ export const deleteMonitoring = async (req: Request, res: Response) => {
     await prisma.monitoring.delete({ where: { id: Number(id) } });
     res.json({ message: "Monitoring deleted" });
   } catch (err) {
-    res.status(500).json({ message: "Failed to delete monitoring", error: err });
+    if (isPrismaKnownError(err) && err.code === "P2025") {
+      return res.status(404).json({ message: "Monitoring not found" });
+    }
+    res
+      .status(500)
+      .json({ message: "Failed to delete monitoring", error: err });
   }
 };
 
@@ -167,13 +221,20 @@ export const upsertBulkMonitoring = async (req: Request, res: Response) => {
   try {
     const ops: any[] = [];
     for (const entry of entries) {
-      const studentId = typeof entry?.studentId === "string" ? entry.studentId.trim() : "";
+      const studentId =
+        typeof entry?.studentId === "string" ? entry.studentId.trim() : "";
       const subjectId = Number(entry?.subjectId);
       const studyYearId = Number(entry?.studyYearId);
       const score = entry?.score;
       const month = normalize(entry?.month);
 
-      if (!studentId || !Number.isFinite(subjectId) || !Number.isFinite(studyYearId) || !month) continue;
+      if (
+        !studentId ||
+        !Number.isFinite(subjectId) ||
+        !Number.isFinite(studyYearId) ||
+        !month
+      )
+        continue;
       if (typeof score !== "number") continue;
 
       ops.push(
@@ -188,7 +249,7 @@ export const upsertBulkMonitoring = async (req: Request, res: Response) => {
           },
           update: { score },
           create: { studentId, subjectId, studyYearId, month, score },
-        }),
+        })
       );
     }
 
@@ -202,6 +263,14 @@ export const upsertBulkMonitoring = async (req: Request, res: Response) => {
 
     res.json({ updated: entriesSaved.length, entries: entriesSaved });
   } catch (err) {
-    res.status(500).json({ message: "Failed to upsert monitoring entries", error: err });
+    if (isPrismaKnownError(err) && err.code === "P2003") {
+      return res.status(400).json({
+        message:
+          "One or more entries reference missing students, subjects, or study years",
+      });
+    }
+    res
+      .status(500)
+      .json({ message: "Failed to upsert monitoring entries", error: err });
   }
 };

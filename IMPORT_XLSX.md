@@ -63,9 +63,28 @@ In Admin → Monitoring → **Import XLSX**:
 This writes monitoring using the unique key:
 `(studentId, subjectId, studyYearId, month)` (upsert).
 
+## Importing students
+
+In Admin → Students → **Import XLSX**:
+
+1. Select **Study year**.
+2. (Optional) Select **Grade** to apply to all rows; otherwise add a `grade` column in the file that matches an existing grade name.
+3. Choose your XLSX file.
+4. Toggle **Update existing students** if you want existing IDs to be updated; otherwise they will be skipped.
+
+Required columns:
+
+- `studentId` or `id`
+- `fullName`
+
+Optional column:
+
+- `grade` (matched against grade names in Admin → Grades)
+
+Duplicates by `studentId` are merged automatically, and rows without an ID or full name are ignored.
+
 ## Common errors and fixes
 
 - **“Missing required column: studentId”** → rename the first column header to `studentId`.
 - **“Unknown subject columns …”** → fix the header spelling to match Admin → Subjects, or create the missing subject first.
 - **“studentId … not found in selected study year/grade”** → student is missing or in another year/grade; fix the ID or adjust the selected filters.
-

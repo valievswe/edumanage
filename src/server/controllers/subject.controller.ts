@@ -1,5 +1,9 @@
 import { Request, Response } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
+
+const isPrismaKnownError = (err: unknown): err is Prisma.PrismaClientKnownRequestError =>
+  err instanceof Prisma.PrismaClientKnownRequestError;
 
 export const getSubjects = async (_: Request, res: Response) => {
   try {
@@ -45,6 +49,17 @@ export const deleteSubject = async (req: Request, res: Response) => {
     await prisma.subject.delete({ where: { id: Number(id) } });
     res.json({ message: "Subject deleted" });
   } catch (err) {
+    if (isPrismaKnownError(err)) {
+      if (err.code === "P2025") {
+        return res.status(404).json({ message: "Subject not found" });
+      }
+      if (err.code === "P2003") {
+        return res.status(409).json({
+          message:
+            "Cannot delete subject because marks or monitoring records reference it",
+        });
+      }
+    }
     res.status(500).json({ message: "Failed to delete subject", error: err });
   }
 };

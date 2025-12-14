@@ -2,9 +2,13 @@ import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 
+const isPrismaKnownError = (err: unknown): err is Prisma.PrismaClientKnownRequestError =>
+  err instanceof Prisma.PrismaClientKnownRequestError;
+
 export const getMarks = async (req: Request, res: Response) => {
   try {
-    const { studentId, subjectId, quarterId, gradeId, studyYearId, search } = req.query;
+    const { studentId, subjectId, quarterId, gradeId, studyYearId, search } =
+      req.query;
     const where: Prisma.MarkWhereInput = {};
 
     if (studentId) where.studentId = String(studentId);
@@ -26,7 +30,11 @@ export const getMarks = async (req: Request, res: Response) => {
 
     const marks = await prisma.mark.findMany({
       where,
-      include: { student: { include: { grade: true } }, subject: true, quarter: true },
+      include: {
+        student: { include: { grade: true } },
+        subject: true,
+        quarter: true,
+      },
       orderBy: { createdAt: "desc" },
     });
     res.json(marks);
@@ -40,7 +48,11 @@ export const getMarkById = async (req: Request, res: Response) => {
     const { id } = req.params;
     const mark = await prisma.mark.findUnique({
       where: { id: Number(id) },
-      include: { student: { include: { grade: true } }, subject: true, quarter: true },
+      include: {
+        student: { include: { grade: true } },
+        subject: true,
+        quarter: true,
+      },
     });
     if (!mark) return res.status(404).json({ message: "Mark not found" });
     res.json(mark);
@@ -54,10 +66,19 @@ export const createMark = async (req: Request, res: Response) => {
     const { score, studentId, subjectId, quarterId } = req.body;
     const mark = await prisma.mark.create({
       data: { score, studentId, subjectId, quarterId },
-      include: { student: { include: { grade: true } }, subject: true, quarter: true },
+      include: {
+        student: { include: { grade: true } },
+        subject: true,
+        quarter: true,
+      },
     });
     res.status(201).json(mark);
   } catch (err) {
+    if (isPrismaKnownError(err) && err.code === "P2003") {
+      return res
+        .status(400)
+        .json({ message: "Invalid student, subject, or quarter reference" });
+    }
     res.status(500).json({ message: "Failed to create mark", error: err });
   }
 };
@@ -69,10 +90,24 @@ export const updateMark = async (req: Request, res: Response) => {
     const mark = await prisma.mark.update({
       where: { id: Number(id) },
       data: { score },
-      include: { student: { include: { grade: true } }, subject: true, quarter: true },
+      include: {
+        student: { include: { grade: true } },
+        subject: true,
+        quarter: true,
+      },
     });
     res.json(mark);
   } catch (err) {
+    if (isPrismaKnownError(err)) {
+      if (err.code === "P2025") {
+        return res.status(404).json({ message: "Mark not found" });
+      }
+      if (err.code === "P2003") {
+        return res
+          .status(400)
+          .json({ message: "Invalid student, subject, or quarter reference" });
+      }
+    }
     res.status(500).json({ message: "Failed to update mark", error: err });
   }
 };
@@ -83,6 +118,9 @@ export const deleteMark = async (req: Request, res: Response) => {
     await prisma.mark.delete({ where: { id: Number(id) } });
     res.json({ message: "Mark deleted" });
   } catch (err) {
+    if (isPrismaKnownError(err) && err.code === "P2025") {
+      return res.status(404).json({ message: "Mark not found" });
+    }
     res.status(500).json({ message: "Failed to delete mark", error: err });
   }
 };
@@ -104,7 +142,8 @@ export const upsertBulkMarks = async (req: Request, res: Response) => {
   try {
     const results = await Promise.all(
       entries.map(async ({ studentId, subjectId, quarterId, score }) => {
-        if (!studentId || !subjectId || !quarterId || typeof score !== "number") return null;
+        if (!studentId || !subjectId || !quarterId || typeof score !== "number")
+          return null;
 
         const whereUnique: Prisma.MarkWhereUniqueInput = {
           student_subject_quarter_unique: { studentId, subjectId, quarterId },
@@ -121,6 +160,12 @@ export const upsertBulkMarks = async (req: Request, res: Response) => {
     const filtered = results.filter(Boolean);
     res.json({ updated: filtered.length, entries: filtered });
   } catch (err) {
+    if (isPrismaKnownError(err) && err.code === "P2003") {
+      return res.status(400).json({
+        message:
+          "One or more entries reference missing students, subjects, or quarters",
+      });
+    }
     res.status(500).json({ message: "Failed to upsert marks", error: err });
   }
 };

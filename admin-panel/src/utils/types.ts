@@ -102,3 +102,13 @@ export interface StudentMarksResponse {
     score: number;
   }>;
 }
+
+export interface StudentImportResponse {
+  message?: string;
+  total: number;
+  created: number;
+  updated: number;
+  skippedExisting: number;
+  duplicatesMerged?: number;
+  invalid?: number;
+}

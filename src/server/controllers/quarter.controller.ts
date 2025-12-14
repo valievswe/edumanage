@@ -1,5 +1,9 @@
 import { Request, Response } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
+
+const isPrismaKnownError = (err: unknown): err is Prisma.PrismaClientKnownRequestError =>
+  err instanceof Prisma.PrismaClientKnownRequestError;
 
 export const getQuarters = async (_: Request, res: Response) => {
   const quarters = await prisma.quarter.findMany({
@@ -31,7 +35,21 @@ export const createQuarter = async (req: Request, res: Response) => {
 };
 
 export const deleteQuarter = async (req: Request, res: Response) => {
-  const { id } = req.params;
-  await prisma.quarter.delete({ where: { id: Number(id) } });
-  res.json({ message: "Quarter deleted" });
+  try {
+    const { id } = req.params;
+    await prisma.quarter.delete({ where: { id: Number(id) } });
+    res.json({ message: "Quarter deleted" });
+  } catch (err) {
+    if (isPrismaKnownError(err)) {
+      if (err.code === "P2025") {
+        return res.status(404).json({ message: "Quarter not found" });
+      }
+      if (err.code === "P2003") {
+        return res.status(409).json({
+          message: "Cannot delete quarter while marks reference it",
+        });
+      }
+    }
+    res.status(500).json({ message: "Failed to delete quarter", error: err });
+  }
 };
