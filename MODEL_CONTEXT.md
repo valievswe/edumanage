@@ -162,6 +162,7 @@ Admin panel:
 
 ## Notable implementation details / gotchas
 
+- Monitoring table row rendering uses a `resolveRow` helper (`admin-panel/src/pages/monitoring.vue`) to handle Vuetify slot items that may or may not include a `.raw` wrapper, preventing `item.raw` runtime errors.
 - Swagger generation is configured with `filesPattern: "./routes/**/*.ts"`; if you run compiled JS from `dist/`, this may need adjustment to point at built route files.
 - The bot and server share a single process and DB; heavy bot queries can affect API latency.
 - Monitoring month values are normalized: `YYYY-MM` is preferred, `YYYY-MM-DD` is coerced to `YYYY-MM`, and legacy month labels are still accepted.

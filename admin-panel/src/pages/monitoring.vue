@@ -467,6 +467,13 @@ const formatAverage = (value: number | null | undefined) => {
   return Number(value.toFixed(1)).toString()
 }
 
+// Normalize VDataTable slot item (raw row vs wrapper with `.raw`)
+const resolveRow = (item: unknown): MonitoringTableRow | null => {
+  if (!item || typeof item !== 'object') return null
+  if ('raw' in item) return (item as { raw?: MonitoringTableRow | null }).raw ?? null
+  return item as MonitoringTableRow
+}
+
 const openCellForEditing = (row: MonitoringTableRow, subjectId: number) => {
   const entry = monitoring.value.find(
     m =>
@@ -1126,30 +1133,32 @@ watch(quickStudents, () => {
       class="elevation-1"
     >
       <template #item="{ item }">
-        <tr>
-          <td>{{ item.raw.student }}</td>
-          <td>{{ item.raw.grade }}</td>
-          <td>{{ item.raw.studyYear }}</td>
-          <td>{{ formatMonth(item.raw.month) }}</td>
-          <td
-            v-for="subject in subjectColumns"
-            :key="`${item.raw.key}-${subject.id}`"
-            class="text-center"
-          >
-            <span
-              v-if="item.raw[`subject-${subject.id}`] !== null"
-              class="score-cell"
-              title="Click to edit score"
-              @click="openCellForEditing(item.raw, subject.id)"
+        <template v-for="row in [resolveRow(item)]" :key="row?.key || (item as any)?.key || 'row'">
+          <tr v-if="row">
+            <td>{{ row.student }}</td>
+            <td>{{ row.grade }}</td>
+            <td>{{ row.studyYear }}</td>
+            <td>{{ formatMonth(row.month) }}</td>
+            <td
+              v-for="subject in subjectColumns"
+              :key="`${row.key}-${subject.id}`"
+              class="text-center"
             >
-              {{ item.raw[`subject-${subject.id}`] }}
-            </span>
-            <span v-else class="text-medium-emphasis">
-              —
-            </span>
-          </td>
-          <td>{{ formatAverage(item.raw.average) }}</td>
-        </tr>
+              <span
+                v-if="row[`subject-${subject.id}`] !== null"
+                class="score-cell"
+                title="Click to edit score"
+                @click="openCellForEditing(row, subject.id)"
+              >
+                {{ row[`subject-${subject.id}`] }}
+              </span>
+              <span v-else class="text-medium-emphasis">
+                —
+              </span>
+            </td>
+            <td>{{ formatAverage(row.average) }}</td>
+          </tr>
+        </template>
       </template>
     </VDataTable>
 
