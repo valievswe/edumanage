@@ -96,15 +96,93 @@ const filters = reactive({
   month: '',
 })
 
-const headers = [
+const subjectColumns = computed(() => {
+  const unique = new Map<number, Subject>()
+  monitoring.value.forEach(entry => {
+    if (!unique.has(entry.subject.id)) unique.set(entry.subject.id, entry.subject)
+  })
+  return Array.from(unique.values()).sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+  )
+})
+
+type MonitoringTableRow = {
+  key: string
+  studentId: string
+  studyYearId: number
+  student: string
+  grade: string
+  studyYear: string
+  month: string
+  average: number | null
+} & Record<string, number | string | null>
+
+const tableHeaders = computed(() => [
   { title: 'Student', key: 'student' },
   { title: 'Grade', key: 'grade' },
-  { title: 'Subject', key: 'subject' },
+  { title: 'Study year', key: 'studyYear' },
   { title: 'Month', key: 'month' },
-  { title: 'Score', key: 'score' },
-  { title: 'Study year', key: 'year' },
-  { title: 'Actions', key: 'actions', sortable: false },
-]
+  ...subjectColumns.value.map(subject => ({ title: subject.name, key: `subject-${subject.id}` })),
+  { title: 'Average', key: 'average' },
+])
+
+const monitoringRows = computed<MonitoringTableRow[]>(() => {
+  const rows = new Map<
+    string,
+    {
+      key: string
+      studentId: string
+      studyYearId: number
+      student: string
+      grade: string
+      studyYear: string
+      month: string
+      scores: Record<number, number>
+    }
+  >()
+
+  monitoring.value.forEach(entry => {
+    const key = `${entry.student.id}-${entry.month}-${entry.studyYear.id}`
+    if (!rows.has(key)) {
+      rows.set(key, {
+        key,
+        studentId: entry.student.id,
+        studyYearId: entry.studyYear.id,
+        student: entry.student.fullName,
+        grade: entry.student.grade?.name || '—',
+        studyYear: entry.studyYear.name,
+        month: entry.month,
+        scores: {},
+      })
+    }
+    rows.get(key)!.scores[entry.subject.id] = entry.score
+  })
+
+  return Array.from(rows.values()).map(row => {
+    const subjectCells: Record<string, number | null> = {}
+    subjectColumns.value.forEach(subject => {
+      subjectCells[`subject-${subject.id}`] = row.scores[subject.id] ?? null
+    })
+    const scoreValues = subjectColumns.value
+      .map(subject => row.scores[subject.id])
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+    const average = scoreValues.length
+      ? Number((scoreValues.reduce((sum, value) => sum + value, 0) / scoreValues.length).toFixed(1))
+      : null
+
+    return {
+      key: row.key,
+      studentId: row.studentId,
+      studyYearId: row.studyYearId,
+      student: row.student,
+      grade: row.grade,
+      studyYear: row.studyYear,
+      month: row.month,
+      average,
+      ...subjectCells,
+    }
+  })
+})
 
 // Quick entry (month+subject for a whole grade)
 const quickSelections = reactive({
@@ -387,6 +465,17 @@ const formatMonth = (value: string) => {
 const formatAverage = (value: number | null | undefined) => {
   if (value == null || Number.isNaN(value)) return '—'
   return Number(value.toFixed(1)).toString()
+}
+
+const openCellForEditing = (row: MonitoringTableRow, subjectId: number) => {
+  const entry = monitoring.value.find(
+    m =>
+      m.student.id === row.studentId &&
+      m.studyYear.id === row.studyYearId &&
+      m.subject.id === subjectId &&
+      m.month === row.month,
+  )
+  if (entry) openEditDialog(entry)
 }
 
 const fetchOptions = async () => {
@@ -1030,39 +1119,37 @@ watch(quickStudents, () => {
     </VCard>
 
     <VDataTable
-      :headers="headers"
-      :items="monitoring"
+      :headers="tableHeaders"
+      :items="monitoringRows"
       :loading="loading"
+      item-value="key"
       class="elevation-1"
     >
-      <template #item.student="{ item }">
-        {{ item.student.fullName }}
-      </template>
-      <template #item.grade="{ item }">
-        {{ item.student.grade?.name || '—' }}
-      </template>
-      <template #item.subject="{ item }">
-        {{ item.subject.name }}
-      </template>
-      <template #item.month="{ item }">
-        {{ formatMonth(item.month) }}
-      </template>
-      <template #item.year="{ item }">
-        {{ item.studyYear.name }}
-      </template>
-      <template #item.actions="{ item }">
-        <VBtn
-          icon="ri-pencil-line"
-          variant="text"
-          @click="openEditDialog(item)"
-        />
-        <VBtn
-          icon="ri-delete-bin-6-line"
-          variant="text"
-          color="error"
-          :loading="deletingId === item.id"
-          @click="deleteMonitoringEntry(item)"
-        />
+      <template #item="{ item }">
+        <tr>
+          <td>{{ item.raw.student }}</td>
+          <td>{{ item.raw.grade }}</td>
+          <td>{{ item.raw.studyYear }}</td>
+          <td>{{ formatMonth(item.raw.month) }}</td>
+          <td
+            v-for="subject in subjectColumns"
+            :key="`${item.raw.key}-${subject.id}`"
+            class="text-center"
+          >
+            <span
+              v-if="item.raw[`subject-${subject.id}`] !== null"
+              class="score-cell"
+              title="Click to edit score"
+              @click="openCellForEditing(item.raw, subject.id)"
+            >
+              {{ item.raw[`subject-${subject.id}`] }}
+            </span>
+            <span v-else class="text-medium-emphasis">
+              —
+            </span>
+          </td>
+          <td>{{ formatAverage(item.raw.average) }}</td>
+        </tr>
       </template>
     </VDataTable>
 
@@ -1193,6 +1280,15 @@ watch(quickStudents, () => {
           </VForm>
         </VCardText>
         <VCardActions>
+          <VBtn
+            v-if="editingEntry"
+            variant="text"
+            color="error"
+            :loading="deletingId === editingEntry.id"
+            @click="deleteMonitoringEntry(editingEntry)"
+          >
+            Delete
+          </VBtn>
           <VSpacer />
           <VBtn
             variant="text"
@@ -1343,5 +1439,8 @@ watch(quickStudents, () => {
   left: 140px;
   background: var(--v-theme-surface);
   z-index: 2;
+}
+.score-cell {
+  cursor: pointer;
 }
 </style>

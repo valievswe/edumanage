@@ -135,6 +135,10 @@ The admin UI (`admin-panel/`) calls backend endpoints using Axios:
 - `admin-panel/src/utils/api.ts` injects `Authorization: Bearer ...` from localStorage key `klsbot_token`.
 - `admin-panel/src/utils/authStore.ts` manages login/profile/logout.
 - Pages in `admin-panel/src/pages/*.vue` implement CRUD for years/quarters, subjects, grades, students, marks (incl bulk), monitoring.
+- Monitoring UI highlights:
+  - Summary card shows overall + per-subject averages for the current filters.
+  - Quick entry allows per-grade, multi-subject edits with paste-from-Excel support and bulk upsert.
+  - Main table pivots results by student/month with one column per subject and a trailing per-student average; click a score cell to open the edit dialog (delete from there).
 
 ## Local development (typical)
 
