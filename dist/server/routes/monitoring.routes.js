@@ -26,6 +26,18 @@ const router = (0, express_1.Router)();
  */
 router.get("/", auth_middleare_1.verifyAdmin, monitoring_controller_1.getMonitorings);
 /**
+ * GET /api/monitoring/summary
+ * @summary Monitoring averages for current filters
+ * @tags Monitoring
+ * @param {string} Authorization.header.required - Bearer access token
+ * @param {number} studyYearId.query - Study year filter
+ * @param {number} gradeId.query - Grade filter
+ * @param {string} search.query - Student name or ID
+ * @param {string} month.query - Month filter (recommended format: YYYY-MM)
+ * @return {object} 200 - Monitoring averages grouped by subject
+ */
+router.get("/summary", auth_middleare_1.verifyAdmin, monitoring_controller_1.getMonitoringSummary);
+/**
  * GET /api/monitoring/{id}
  * @summary Get monitoring by ID
  * @tags Monitoring

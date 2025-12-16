@@ -11,7 +11,14 @@ const grades = ref<Grade[]>([])
 
 const loading = ref(false)
 const optionsLoading = ref(false)
+const summaryLoading = ref(false)
 const errorMessage = ref('')
+const summaryError = ref('')
+const monitoringSummary = reactive({
+  overallAverage: null as number | null,
+  totalEntries: 0,
+  bySubject: [] as Array<{ subjectId: number; subjectName: string; averageScore: number | null; entries: number }>,
+})
 const snackbar = reactive({ visible: false, color: 'success', text: '' })
 const deletingId = ref<number | null>(null)
 const normalizeKey = (value: string) => value.trim().toLowerCase().replace(/[\s_]+/g, '')
@@ -323,21 +330,44 @@ const saveQuickMonitoring = async () => {
 
 const fetchMonitoring = async () => {
   loading.value = true
+  summaryLoading.value = true
   errorMessage.value = ''
+  summaryError.value = ''
+  const params = {
+    search: filters.search || undefined,
+    gradeId: filters.gradeId || undefined,
+    studyYearId: filters.studyYearId || undefined,
+    month: filters.month || undefined,
+  }
   try {
-    const { data } = await api.get<Monitoring[]>('/api/monitoring', {
-      params: {
-        search: filters.search || undefined,
-        gradeId: filters.gradeId || undefined,
-        studyYearId: filters.studyYearId || undefined,
-        month: filters.month || undefined,
-      },
-    })
-    monitoring.value = data
-  } catch (err: any) {
-    errorMessage.value = err?.response?.data?.message || 'Failed to load monitoring entries.'
+    const [listRes, summaryRes] = await Promise.allSettled([
+      api.get<Monitoring[]>('/api/monitoring', { params }),
+      api.get('/api/monitoring/summary', { params }),
+    ])
+
+    if (listRes.status === 'fulfilled') {
+      monitoring.value = listRes.value.data
+    } else {
+      const message = (listRes.reason as any)?.response?.data?.message
+      errorMessage.value = message || 'Failed to load monitoring entries.'
+      monitoring.value = []
+    }
+
+    if (summaryRes.status === 'fulfilled') {
+      const data = summaryRes.value.data
+      monitoringSummary.totalEntries = data?.totalEntries ?? 0
+      monitoringSummary.overallAverage = data?.overallAverage ?? null
+      monitoringSummary.bySubject = Array.isArray(data?.bySubject) ? data.bySubject : []
+    } else {
+      const message = (summaryRes.reason as any)?.response?.data?.message
+      summaryError.value = message || 'Failed to load monitoring averages.'
+      monitoringSummary.totalEntries = 0
+      monitoringSummary.overallAverage = null
+      monitoringSummary.bySubject = []
+    }
   } finally {
     loading.value = false
+    summaryLoading.value = false
   }
 }
 
@@ -352,6 +382,11 @@ const formatMonth = (value: string) => {
   if (!match) return value
   const [year, month] = [match[1], match[2]]
   return `${year}-${month}`
+}
+
+const formatAverage = (value: number | null | undefined) => {
+  if (value == null || Number.isNaN(value)) return '—'
+  return Number(value.toFixed(1)).toString()
 }
 
 const fetchOptions = async () => {
@@ -772,6 +807,71 @@ watch(quickStudents, () => {
             />
           </VCol>
         </VRow>
+      </VCardText>
+    </VCard>
+
+    <VCard class="mb-6">
+      <VCardTitle>Monitoring averages</VCardTitle>
+      <VCardSubtitle>
+        Calculated from the current filters.
+      </VCardSubtitle>
+      <VCardText>
+        <div class="d-flex flex-wrap gap-6 align-center mb-4">
+          <div>
+            <div class="text-caption text-medium-emphasis">
+              Overall average
+            </div>
+            <div class="text-h4">
+              <span v-if="summaryLoading">...</span>
+              <span v-else>{{ formatAverage(monitoringSummary.overallAverage) }}</span>
+            </div>
+          </div>
+          <div>
+            <div class="text-caption text-medium-emphasis">
+              Entries counted
+            </div>
+            <div class="text-h6">
+              <span v-if="summaryLoading">...</span>
+              <span v-else>{{ monitoringSummary.totalEntries }}</span>
+            </div>
+          </div>
+        </div>
+        <VAlert
+          v-if="summaryError"
+          type="warning"
+          variant="tonal"
+          class="mb-3"
+        >
+          {{ summaryError }}
+        </VAlert>
+        <div v-if="summaryLoading" class="text-medium-emphasis">
+          Calculating averages...
+        </div>
+        <VTable
+          v-else-if="monitoringSummary.bySubject.length"
+          density="comfortable"
+        >
+          <thead>
+            <tr>
+              <th>Subject</th>
+              <th>Average score</th>
+              <th>Entries</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="subject in monitoringSummary.bySubject"
+              :key="subject.subjectId"
+            >
+              <td>{{ subject.subjectName }}</td>
+              <td>{{ formatAverage(subject.averageScore) }}</td>
+              <td>{{ subject.entries }}</td>
+            </tr>
+          </tbody>
+        </VTable>
+        <p v-else class="text-medium-emphasis mb-0">
+          No monitoring entries match the current filters.
+        </p>
       </VCardText>
     </VCard>
 

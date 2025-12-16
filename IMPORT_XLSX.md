@@ -75,7 +75,7 @@ In Admin → Students → **Import XLSX**:
 
 1. Select **Study year**.
 2. (Optional) Select **Grade** to apply to all rows; otherwise add a `grade` column in the file that matches an existing grade name.
-3. Choose your XLSX file.
+3. Choose your XLSX file **or** use the built-in sheet to paste/type rows (ID, fullName, optional grade).
 4. Toggle **Update existing students** if you want existing IDs to be updated; otherwise they will be skipped.
 
 Required columns:
@@ -88,6 +88,12 @@ Optional column:
 - `grade` (case-insensitive match against grade names in Admin → Grades; headers `grade`, `class`, or `grade_name` are accepted)
 
 Duplicates by `studentId` are merged automatically, and rows without an ID or full name are ignored. If you select a **Grade** in the dialog, it is used as the default when a row omits grade data.
+
+### Inline sheet entry (students)
+
+- Columns: `studentId`, `fullName`, `grade` (optional).
+- You can paste directly from Excel/Sheets (tab/CSV); invalid rows are rejected until both ID and full name are present.
+- Uses the same backend import endpoint as file upload.
 
 ## Common errors and fixes
 

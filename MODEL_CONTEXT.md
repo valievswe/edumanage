@@ -102,6 +102,7 @@ Auth header: `Authorization: Bearer <token>`
 - `GET /api/students/options` (lightweight list for dropdowns)
 - `GET/POST/PUT/DELETE /api/students`
 - `POST /api/students/import` (parsed XLSX rows sent from client)
+- Admin UI also supports inline “sheet” entry for student imports (ID, fullName, grade) in addition to XLSX upload/paste.
 - `GET/POST/PUT/DELETE /api/subjects`
 - `GET/POST/PUT/DELETE /api/grades`
 - `GET/POST/PUT/DELETE /api/monitoring`

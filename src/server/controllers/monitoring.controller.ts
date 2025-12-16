@@ -91,6 +91,74 @@ export const getMonitorings = async (req: Request, res: Response) => {
   }
 };
 
+export const getMonitoringSummary = async (req: Request, res: Response) => {
+  try {
+    const { studyYearId, gradeId, search, month } = req.query;
+    const where: MonitoringWhereInput = {};
+
+    if (studyYearId) where.studyYearId = Number(studyYearId);
+    if (month && typeof month === "string" && month.trim()) {
+      const normalizedMonth = normalizeMonth(month);
+      if (normalizedMonth) where.month = normalizedMonth;
+    }
+
+    const studentFilter: StudentWhereInput = {};
+    if (gradeId) studentFilter.gradeId = Number(gradeId);
+    if (search && typeof search === "string") {
+      studentFilter.OR = [
+        { fullName: { contains: search, mode: "insensitive" } },
+        { id: { contains: search, mode: "insensitive" } },
+      ];
+    }
+    if (Object.keys(studentFilter).length) {
+      where.student = studentFilter;
+    }
+
+    const [overallAvg, subjectGroups] = await Promise.all([
+      prisma.monitoring.aggregate({
+        where,
+        _avg: { score: true },
+        _count: true,
+      }),
+      prisma.monitoring.groupBy({
+        by: ["subjectId"],
+        where,
+        _avg: { score: true },
+        _count: { _all: true },
+        orderBy: { subjectId: "asc" },
+      }),
+    ]);
+
+    const subjectIds = subjectGroups.map((g) => g.subjectId);
+    const subjects =
+      subjectIds.length > 0
+        ? await prisma.subject.findMany({
+            where: { id: { in: subjectIds } },
+            select: { id: true, name: true },
+          })
+        : [];
+    const subjectNameMap = new Map(subjects.map((s) => [s.id, s.name]));
+
+    res.json({
+      totalEntries:
+        typeof overallAvg._count === "number"
+          ? overallAvg._count
+          : (overallAvg._count as any)?._all ?? 0,
+      overallAverage: overallAvg._avg.score,
+      bySubject: subjectGroups.map((group) => ({
+        subjectId: group.subjectId,
+        subjectName: subjectNameMap.get(group.subjectId) ?? "Unknown subject",
+        averageScore: group._avg.score,
+        entries: group._count._all,
+      })),
+    });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ message: "Failed to build monitoring summary", error: err });
+  }
+};
+
 export const getMonitoringById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;

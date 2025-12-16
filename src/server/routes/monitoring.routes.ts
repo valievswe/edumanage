@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   getMonitorings,
+  getMonitoringSummary,
   getMonitoringById,
   createMonitoring,
   updateMonitoring,
@@ -33,6 +34,19 @@ const router = Router();
  * @return {array<object>} 200 - Monitoring list
  */
 router.get("/", verifyAdmin, getMonitorings);
+
+/**
+ * GET /api/monitoring/summary
+ * @summary Monitoring averages for current filters
+ * @tags Monitoring
+ * @param {string} Authorization.header.required - Bearer access token
+ * @param {number} studyYearId.query - Study year filter
+ * @param {number} gradeId.query - Grade filter
+ * @param {string} search.query - Student name or ID
+ * @param {string} month.query - Month filter (recommended format: YYYY-MM)
+ * @return {object} 200 - Monitoring averages grouped by subject
+ */
+router.get("/summary", verifyAdmin, getMonitoringSummary);
 
 /**
  * GET /api/monitoring/{id}
